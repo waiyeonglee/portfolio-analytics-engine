@@ -404,13 +404,13 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
 
     total_assets = acc.loc[0, 'total_assets']
 
+    df['date'] = today_date
     df['total_assets'] = total_assets
     df['realized_pl_sum'] = realized_pl_sum
     df['realized_pl'] = realized_pl
     df['peak_exposure'] = peak_exposure
 
-    files = list(Path(logs_folder).glob(f"*{daily_status_file_name}.csv"))
-
+    files = list(Path(logs_folder).glob(f"*{daily_status_file_name}"))
     prev_df = None
 
     if files:
@@ -420,7 +420,6 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
             return pd.to_datetime(match.group()) if match else pd.Timestamp.min
 
         prev_file = max(files, key=extract_date)
-
         file_date = extract_date(prev_file).date()
 
         if file_date != pd.Timestamp(today_date).date():
@@ -428,8 +427,6 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
 
     if prev_df is not None:
         df = pd.concat([prev_df, df], ignore_index=True)
-    
-        print(prev_df)
     return df
 # ============================================================
 # QUOTE CALLBACK
