@@ -251,10 +251,10 @@ def get_available_qty(trade_ctx, current_price, lot_size):
 
     return max_cash_buy, max_position_sell
 
-def initialize_rows(strategy, trade_ctx, quote_ctx, today_date, lot_size):
+def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
     
-    prev_date = (today_date - BDay(5)).strftime('%Y-%m-%d')
-    end_date = today_date.strftime('%Y-%m-%d')
+    prev_date = (job_start_date - BDay(5)).strftime('%Y-%m-%d')
+    end_date = job_start_date.strftime('%Y-%m-%d')
 
     full_df = []
     ret, historical_df, page_req_key = quote_ctx.request_history_kline(
@@ -331,7 +331,7 @@ def initialize_rows(strategy, trade_ctx, quote_ctx, today_date, lot_size):
     print("Initialized time: ", df_past['time_key'].iloc[-1])
     return df_current, last_day
 
-def compute_daily_pl(today_date, output_df, file_name, price):
+def compute_daily_pl(output_df, file_name, price):
     output_filename = file_name.split('_')[0]
 
     sell_df = output_df.loc[output_df['action'] == 'SELL'].copy()
@@ -359,7 +359,7 @@ def compute_daily_pl(today_date, output_df, file_name, price):
         realized_pl = 0
 
     print(f"Total Return: {realized_pl_sum:.0f}, {realized_pl:.3f}%")
-    output_path = os.path.join(os.getcwd(), 'logs', f"{today_date.strftime('%Y-%m-%d %H:%M:%S')} - pl_{output_filename}.csv")
+    output_path = os.path.join(os.getcwd(), 'logs', f"{pd.Timestamp.today().strftime('%Y-%m-%d %H:%M:%S')} - pl_{output_filename}.csv")
     sell_df.to_csv(output_path)
 
     return realized_pl_sum, peak_exposure, realized_pl
@@ -404,7 +404,7 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
 
     total_assets = acc.loc[0, 'total_assets']
 
-    df['date'] = today_date
+    df['date'] = job_start_date
     df['total_assets'] = total_assets
     df['realized_pl_sum'] = realized_pl_sum
     df['realized_pl'] = realized_pl
@@ -422,7 +422,8 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
         prev_file = max(files, key=extract_date)
         file_date = extract_date(prev_file).date()
 
-        if file_date != pd.Timestamp(today_date).date():
+        if file_date != pd.Timestamp(pd.Timestamp.today().strftime('%Y-%m-%d %H:%M:%S')).date():
+            print("Previous file: ", prev_file)
             prev_df = pd.read_csv(prev_file)
 
     if prev_df is not None:
@@ -550,7 +551,7 @@ class OrderHandler(TradeOrderHandlerBase):
 # START
 # ============================================================
 
-def start(today_date):
+def start(job_start_date):
     if SYMBOL.startswith("HK."):
         trade_market = TrdMarket.HK
         market = 'market_hk'
@@ -576,7 +577,7 @@ def start(today_date):
     lot_size = stock_data['lot_size'].iloc[0]
 
     # df_current and last_day only used for backtesting, not live mode
-    df_current, last_day = initialize_rows(strategy, trade_ctx, quote_ctx, today_date, lot_size)
+    df_current, last_day = initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size)
 
     if live_mode:    
         trade_ctx.set_handler(OrderHandler(strategy, trade_ctx, lot_size))
@@ -688,12 +689,12 @@ if __name__ == "__main__":
         timezone_date = pd.to_datetime(args.date).tz_localize("America/New_York")
 
     if live_mode:
-        today_date = timezone_date
+        job_start_date = timezone_date
     else:
-        today_date = pd.to_datetime(str(timezone_date) + ' 23:59:00')
+        job_start_date = pd.to_datetime(str(timezone_date) + ' 23:59:00')
     
     try:
-        strategy, quote_ctx, trade_ctx = start(today_date)
+        strategy, quote_ctx, trade_ctx = start(job_start_date)
     except KeyboardInterrupt:
         print("Stopped by user.")
     finally:
@@ -713,7 +714,7 @@ if __name__ == "__main__":
             print(output_path)
             output_df.to_csv(output_path)
 
-            realized_pl_sum, peak_exposure, realized_pl = compute_daily_pl(pd.Timestamp.today(), output_df, file_name, price)
+            realized_pl_sum, peak_exposure, realized_pl = compute_daily_pl(output_df, file_name, price)
             daily_status = get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name)
             daily_status_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H:%M:%S')} - {daily_status_file_name}")
             print(daily_status_path)
