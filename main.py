@@ -1,6 +1,7 @@
 import time
 import os
 import argparse
+from turtle import mode
 import talib
 import re
 import pandas as pd
@@ -114,9 +115,6 @@ class MovingAverageStrategy:
         return pl_pct
 
     def buy_or_sell(self, pl_pct=0):
-        if len(self.prices) < window_length:
-            return "INITIALIZING", "INITIALIZING", "INITIALIZING"
-        
         action = "HOLD"
         
         # buy ratio 0 < x < 1
@@ -190,6 +188,7 @@ class MovingAverageStrategy:
             "hit_loss": self.unrealized_pl_pct <= LOSS_PCT,
             "MACD Histogram": self.macd_histogram,
             "cost_price": self.cost_price,
+            "total_price": self.total_price,
             "max_cash_buy": self.max_cash_buy,
             "max_position_sell": self.max_position_sell,
             "trade_qty": self.trade_qty,
@@ -251,6 +250,39 @@ def get_available_qty(trade_ctx, current_price, lot_size):
 
     return max_cash_buy, max_position_sell
 
+def get_market_trend_live(quote_ctx):
+    trend_code = "HK.800000" if SYMBOL.startswith("HK.") else "US.SPY"
+    ret, df_market = quote_ctx.get_market_snapshot([trend_code])
+
+    if ret != RET_OK:
+        print("Error fetching market trend:", df_market)
+        return None
+
+    return (
+        df_market.loc[0, "last_price"]
+        - df_market.loc[0, "prev_close_price"]
+    )
+
+def get_market_trend_simulation(quote_ctx, last_day=None):
+    trend_code = "HK.800000" if SYMBOL.startswith("HK.") else "US.SPY"
+    if last_day is None:
+        raise ValueError("last_day must be provided in backtest mode.")
+
+    ret, df_market, _ = quote_ctx.request_history_kline(
+        trend_code,
+        last_day.strftime("%Y-%m-%d"),
+        last_day.strftime("%Y-%m-%d"),
+        SubType.K_1M,
+        AuType.NONE,
+    )
+
+    if ret != RET_OK:
+        print("Error fetching market trend:", df_market)
+        return None
+
+    df_market["time_key"] = pd.to_datetime(df_market["time_key"])
+    return df_market
+
 def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
     
     prev_date = (job_start_date - BDay(5)).strftime('%Y-%m-%d')
@@ -302,20 +334,15 @@ def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
     for i in range(len(df_past)):
         
         row = df_past.iloc[i]
+
+        # Update state
         strategy.update_state_from_row(row, init=True)
         current_price = strategy.prices[-1]
-        
-        if live_mode:
-            strategy.cost_price = get_position_status(trade_ctx)
-            strategy.unrealized_pl_pct = strategy.compute_pl(current_price)
-        else:
-            strategy.position_open = False
-            strategy.unrealized_pl_pct = 0
-            strategy.cost_price = 0
 
+        # Get market trend
         strategy.market_trend = 0
-        strategy.realized_pl_pct = 0
 
+        # Cannot call so many times in init, so only call once, since get_available_qty doesnt change during init
         if i == 0:
             max_cash_buy, max_position_sell = get_available_qty(trade_ctx, current_price, lot_size)
             if live_mode:
@@ -324,8 +351,28 @@ def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
             else:
                 strategy.max_cash_buy = max_cash_buy + max_position_sell
                 strategy.max_position_sell = 0
-        action, _, _ = strategy.buy_or_sell()
+
+        if live_mode:
+            # only call cost_price once during init, since cost_price is updated in OrderHandler after BUY/SELL
+            # get_position_status also updates position_open
+            strategy.cost_price = get_position_status(trade_ctx)
+            # compute unrealized P/L before buy_or_sell decision
+            strategy.unrealized_pl_pct = strategy.compute_pl(current_price)
+        else:   
+            strategy.cost_price = 0
+            strategy.unrealized_pl_pct = 0
+            strategy.position_open = False
+
+        # Decide action
+        action = "INITIALIZING"
+
+        # place_order + OrderHandler
+        # Since no order, next_max_cash_buy and next_max_position_sell are not updated during init
         strategy.trade_qty = 0
+        strategy.realized_pl_pct = 0
+
+        strategy.total_price = strategy.cost_price * strategy.max_position_sell
+        # cost price not updated during init
         strategy.save_output(row, action, order_data=None)
 
     print("Initialized time: ", df_past['time_key'].iloc[-1])
@@ -377,8 +424,6 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
         'nominal_price',
         'cost_price',
         'market_val',
-        'unrealized_pl',
-        'realized_pl',
         'pl_ratio'
     ]
 
@@ -389,8 +434,6 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
             'nominal_price': 0,
             'cost_price': 0,
             'market_val': 0,
-            'unrealized_pl': 0,
-            'realized_pl': 0,
             'pl_ratio': 0
         }])
     else:
@@ -404,11 +447,13 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
 
     total_assets = acc.loc[0, 'total_assets']
 
+    df = df.rename(columns=
+              {'pl_ratio': 'unrealized_pl'})
     df['date'] = job_start_date
     df['total_assets'] = total_assets
-    df['realized_pl_sum'] = realized_pl_sum
-    df['realized_pl'] = realized_pl
-    df['peak_exposure'] = peak_exposure
+    df['calculated_realized_pl_sum'] = realized_pl_sum
+    df['calculated_realized_pl'] = realized_pl
+    df['calculated_peak_exposure'] = peak_exposure
 
     files = list(Path(logs_folder).glob(f"*{daily_status_file_name}"))
     prev_df = None
@@ -428,6 +473,11 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
 
     if prev_df is not None:
         df = pd.concat([prev_df, df], ignore_index=True)
+    
+    df['unrealized_pl_sum'] = df['unrealized_pl']/100 * df['market_val']
+    df['asset_difference'] = df['total_assets'].diff()
+    df['asset_difference_ratio'] = df['total_assets'].pct_change() * 100
+    df['calculated_pl_sum'] = df['calculated_realized_pl_sum'] + df['unrealized_pl_sum']
     return df
 # ============================================================
 # QUOTE CALLBACK
@@ -451,30 +501,30 @@ class KlineHandler(CurKlineHandlerBase):
         current_candle = data.iloc[-1]
         # When new candle starts, process prev_candle
         if self.prev_candle is None:
+            # first candle, no action, just save output
             self.prev_candle = current_candle
             action ='HOLD'
             self.strategy.save_output(self.prev_candle, action, order_data=None)
+
         if current_candle['time_key'] != self.prev_candle['time_key']:
             print(f"Current time: {self.prev_candle['time_key']}, Current price:  {self.prev_candle['close']}")
-
+            
             # Update state
             self.strategy.update_state_from_row(self.prev_candle, init=False)
-
             current_price = self.strategy.prices[-1]
 
-            # unrealized -> get cost_price before compute pl
-            self.strategy.cost_price = get_position_status(self.trade_ctx)
-            self.strategy.unrealized_pl_pct = self.strategy.compute_pl(current_price)
-            
+            # Get market trend
+            self.strategy.market_trend = get_market_trend_live(self.quote_ctx)
+
+            # get available qty for buy/sell        
             self.strategy.max_cash_buy, self.strategy.max_position_sell = get_available_qty(self.trade_ctx, current_price, self.lot_size)
             
-            # get trend signal
-            if SYMBOL.startswith("HK."):
-                trend_code = "HK.800000" 
-            else:
-                trend_code ="US.SPY"
-            ret, data = self.quote_ctx.get_market_snapshot([trend_code])
-            self.strategy.market_trend = data['last_price'].iloc[0] - data['prev_close_price'].iloc[0]
+            # update cost price if max_position_sell is 0 (position closed)
+            if self.strategy.max_position_sell == 0:
+                self.strategy.cost_price = 0
+
+            # compute unrealized P/L before buy_or_sell decision
+            self.strategy.unrealized_pl_pct = self.strategy.compute_pl(current_price)    
             # Decide action
             action, buy_qty, sell_qty = self.strategy.buy_or_sell(self.strategy.unrealized_pl_pct)
 
@@ -523,16 +573,22 @@ class OrderHandler(TradeOrderHandlerBase):
                     current_price = data['dealt_avg_price'].iloc[0]
 
                     # realized -> get cost_price after compute pl
+                    self.strategy.realized_pl_pct = self.strategy.compute_pl(current_price)
                     match action:
                         # update cost price if BUY
                         case 'BUY':
-                            self.strategy.realized_pl_pct = 0
-                            self.strategy.cost_price = get_position_status(self.trade_ctx)
+                            # Total price changes after BUY AND SELL
+                            self.strategy.total_price += current_price * self.strategy.trade_qty
+                            # Cost price changes after BUY, but not after SELL
+                            self.strategy.cost_price = self.strategy.total_price /(self.strategy.max_position_sell + self.strategy.trade_qty)
                             o['cost_price'] = self.strategy.cost_price
 
                         case 'SELL':
-                            self.strategy.realized_pl_pct = self.strategy.compute_pl(current_price)
+                            # Total price changes after BUY AND SELL
+                            self.strategy.total_price -= self.strategy.cost_price * self.strategy.trade_qty
+                            # Cost price not updated after SELL
 
+                    o['total_price'] = self.strategy.total_price
                     o['execution_time'] = data['updated_time'].iloc[0]
                     o['execution_price'] = current_price
                     o['realized_pl_pct'] = self.strategy.realized_pl_pct
@@ -599,80 +655,70 @@ def start(job_start_date):
                 return strategy, quote_ctx, trade_ctx
             time.sleep(1)
     else:
-        
-        if SYMBOL.startswith("HK."):
-            trend_code = "HK.800000" 
-        else:
-            trend_code ="US.SPY"
-        ret2, df_HSI, _ = quote_ctx.request_history_kline(
-                trend_code,
-                last_day.strftime('%Y-%m-%d'),
-                last_day.strftime('%Y-%m-%d'),
-                SubType.K_1M, 
-                AuType.NONE
-            )
-        df_HSI["time_key"] = pd.to_datetime(df_HSI["time_key"])
-        total_price = strategy.cost_price * strategy.max_position_sell
+        # simulation mode only, call historical data for market trend
+        df_market = get_market_trend_simulation(quote_ctx, last_day)
+        # simulation mode only, initialize next_max_cash_buy and next_max_position_sell to current values, since they will be updated in the loop
+        next_max_cash_buy = strategy.max_cash_buy
+        next_max_position_sell = strategy.max_position_sell
+
         for _, row in df_current.iterrows():
+            # Update state
             strategy.update_state_from_row(row, init=False)
             current_price = strategy.prices[-1]
+            
+            # Get market trend
+            curr_time = row['time_key']
+            strategy.market_trend = df_market.loc[df_market['time_key'] == curr_time, 'close'].iloc[0] - df_market.loc[df_market['time_key'] == curr_time, 'last_close'].iloc[0]
+            
+            # Manual function for get_available_qty
+            strategy.max_cash_buy = next_max_cash_buy
+            strategy.max_position_sell = next_max_position_sell
 
-            # Manual function for get_position_status
-            # unrealized -> get cost_price before compute pl
-            if strategy.max_position_sell > 0:
-                total_price = strategy.cost_price * strategy.max_position_sell
-            else:
-                total_price = 0
+            # update cost price if max_position_sell is 0 (position closed)
+            if strategy.max_position_sell == 0:
                 strategy.cost_price = 0
 
+            # compute unrealized P/L before buy_or_sell decision
             strategy.unrealized_pl_pct = strategy.compute_pl(current_price)
-
-            # get_available_qty called once during init rows
-
-            # buy_or_sell
-            curr_time = row['time_key']
-            strategy.market_trend = df_HSI.loc[df_HSI['time_key'] == curr_time, 'close'].iloc[0] - df_HSI.loc[df_HSI['time_key'] == curr_time, 'last_close'].iloc[0]
+            # Decide action
             action, buy_qty, sell_qty = strategy.buy_or_sell(strategy.unrealized_pl_pct)
             
             # place_order + OrderHandler
             if action == 'BUY':
                 next_max_cash_buy = strategy.max_cash_buy - buy_qty
                 next_max_position_sell = strategy.max_position_sell + buy_qty
-                
-                # compute_pl then get_position_status
-                total_price += current_price * buy_qty
-                strategy.realized_pl_pct = 0
-                strategy.cost_price = total_price / next_max_position_sell
+
                 strategy.trade_qty = buy_qty * lot_size
+                strategy.realized_pl_pct = strategy.compute_pl(current_price)
+
+                strategy.total_price += current_price * strategy.trade_qty
+                strategy.cost_price = strategy.total_price / next_max_position_sell
                 print(f"BUY | {strategy.trade_qty} {SYMBOL} | Cost: {strategy.cost_price:.2f}")
             elif action == 'SELL':
                 next_max_cash_buy = strategy.max_cash_buy + sell_qty
                 next_max_position_sell = strategy.max_position_sell - sell_qty
-                strategy.trade_qty = sell_qty * lot_size
 
-                # compute_pl
+                strategy.trade_qty = sell_qty * lot_size
                 strategy.realized_pl_pct = strategy.compute_pl(current_price)
-                # cost price not updated, but not logged
+
+                strategy.total_price -= strategy.cost_price * strategy.trade_qty
+                # cost price not updated
                 print(f"SELL | {strategy.trade_qty} {SYMBOL} | Cost: {strategy.cost_price:.2f} | Profit: {strategy.realized_pl_pct:.2f}")
             elif action == 'HOLD':
                 next_max_cash_buy = strategy.max_cash_buy
                 next_max_position_sell = strategy.max_position_sell
                 strategy.trade_qty = 0
                 strategy.realized_pl_pct = 0
-                # cost price remain the same
+                # total price, cost price remain the same
 
-            # Manual function for get_position_status, done before current iteration
+            # Manual function to update position status, as in compute_pl (after order execution), done before current iteration
             if next_max_position_sell > 0:
                 strategy.position_open = True
             else:
                 strategy.position_open = False
+
             print(f"Current time: {row['time_key']}, Current price:  {row['close']}, Unrealized P/L: {strategy.unrealized_pl_pct}")
             strategy.save_output(row, action, order_data=None)
-
-            # To be done before next iteration of buy_or_sell
-            # Manual function for get_available_qty
-            strategy.max_cash_buy = next_max_cash_buy
-            strategy.max_position_sell = next_max_position_sell
 
     return strategy, quote_ctx, trade_ctx
 
@@ -718,7 +764,7 @@ if __name__ == "__main__":
             daily_status = get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name)
             daily_status_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H:%M:%S')} - {daily_status_file_name}")
             print(daily_status_path)
-            daily_status.to_csv(daily_status_path)
+            daily_status.to_csv(daily_status_path, index=False)
 
             quote_ctx.close()
             trade_ctx.close()
