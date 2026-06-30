@@ -1,7 +1,6 @@
 import time
 import os
 import argparse
-from turtle import mode
 import talib
 import re
 import pandas as pd
