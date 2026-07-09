@@ -1,3 +1,4 @@
+config.py
 logs/
 lightning_logs/
 run_main.command

@@ -8,6 +8,7 @@ import numpy as np
 from moomoo import *
 from pandas.tseries.offsets import BDay
 from pathlib import Path
+from config import pwd_unlock
 
 # ================= CONFIG =================
 # SYMBOL = "HK.00700"
@@ -22,7 +23,6 @@ MACD_SIGNAL = 9
 window_length = max(RSI_PERIOD+1, LONG_WINDOW + MACD_SIGNAL+1)
 PROFIT_PCT = 1.5
 LOSS_PCT = -1.0
-trade_env = TrdEnv.SIMULATE
 
 # ============================================================
 # STRATEGY CLASS
@@ -222,7 +222,7 @@ def place_order(trade_ctx, price, symbol, qty, side, order_type, trd_env):
         print(f"❌ Order failed: {side} {symbol} | {data}")
     return data
 
-def get_position_status(trade_ctx):
+def get_position_status(trade_ctx, trade_env):
     """Check if there's an open position for the symbol and return positions"""
     ret, positions = trade_ctx.position_list_query(trd_env=trade_env)
     if ret != RET_OK:
@@ -238,7 +238,7 @@ def get_position_status(trade_ctx):
             break
     return cost_price
     
-def get_available_qty(trade_ctx, current_price, lot_size):
+def get_available_qty(trade_ctx, current_price, lot_size, trade_env):
     ret, max_qty_to_trade = trade_ctx.acctradinginfo_query(order_type=OrderType.NORMAL, code=SYMBOL, price=current_price, trd_env=trade_env)
     if ret != RET_OK:
         print("Error fetching trading info:", max_qty_to_trade)
@@ -343,7 +343,7 @@ def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
 
         # Cannot call so many times in init, so only call once, since get_available_qty doesnt change during init
         if i == 0:
-            max_cash_buy, max_position_sell = get_available_qty(trade_ctx, current_price, lot_size)
+            max_cash_buy, max_position_sell = get_available_qty(trade_ctx, current_price, lot_size, trade_env)
             if live_mode:
                 strategy.max_cash_buy = max_cash_buy
                 strategy.max_position_sell = max_position_sell
@@ -354,7 +354,7 @@ def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
         if live_mode:
             # only call cost_price once during init, since cost_price is updated in OrderHandler after BUY/SELL
             # get_position_status also updates position_open
-            strategy.cost_price = get_position_status(trade_ctx)
+            strategy.cost_price = get_position_status(trade_ctx, trade_env)
             # compute unrealized P/L before buy_or_sell decision
             strategy.unrealized_pl_pct = strategy.compute_pl(current_price)
         else:   
@@ -410,7 +410,7 @@ def compute_daily_pl(output_df, file_name, price):
 
     return realized_pl_sum, peak_exposure, realized_pl
 
-def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name):
+def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name, trade_env):
     # Open positions
     ret, positions = trade_ctx.position_list_query(trd_env=trade_env)
 
@@ -516,7 +516,7 @@ class KlineHandler(CurKlineHandlerBase):
             self.strategy.market_trend = get_market_trend_live(self.quote_ctx)
 
             # get available qty for buy/sell        
-            self.strategy.max_cash_buy, self.strategy.max_position_sell = get_available_qty(self.trade_ctx, current_price, self.lot_size)
+            self.strategy.max_cash_buy, self.strategy.max_position_sell = get_available_qty(self.trade_ctx, current_price, self.lot_size, self.trade_ctx.get_trading_env())
             
             # update cost price if max_position_sell is 0 (position closed)
             if self.strategy.max_position_sell == 0:
@@ -606,7 +606,7 @@ class OrderHandler(TradeOrderHandlerBase):
 # START
 # ============================================================
 
-def start(job_start_date):
+def start(job_start_date, trade_env):
     if SYMBOL.startswith("HK."):
         trade_market = TrdMarket.HK
         market = 'market_hk'
@@ -623,7 +623,11 @@ def start(job_start_date):
             port=11111,
             security_firm=SecurityFirm.FUTUSG
     )
-    
+    if trade_env == TrdEnv.REAL:
+        ret, data = trade_ctx.unlock_trade(pwd_unlock)
+        if ret != RET_OK:
+            print(f"Unlock trade failed: {data}")
+
     ret, stock_data = quote_ctx.get_stock_basicinfo(
         market=trade_market,
         stock_type=SecurityType.STOCK,
@@ -725,8 +729,10 @@ if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description='Run the trading bot in live or test mode.')
     argparser.add_argument('--live', default=False, action='store_true', help='Run the bot in live mode (default is test mode)')
     argparser.add_argument('--date', default=pd.Timestamp.today(), help='Current date, or previous date for backtesting')
+    argparser.add_argument('--env', default=TrdEnv.SIMULATE, help='Trading environment (default is SIMULATE)')
     args = argparser.parse_args()
     live_mode = args.live
+    trade_env = args.env
 
     if SYMBOL.startswith("HK."):
         timezone_date = pd.to_datetime(args.date).tz_localize("Asia/Hong_Kong")
@@ -739,7 +745,7 @@ if __name__ == "__main__":
         job_start_date = pd.to_datetime(str(timezone_date) + ' 23:59:00')
     
     try:
-        strategy, quote_ctx, trade_ctx = start(job_start_date)
+        strategy, quote_ctx, trade_ctx = start(job_start_date, trade_env)
     except KeyboardInterrupt:
         print("Stopped by user.")
     finally:
@@ -760,7 +766,7 @@ if __name__ == "__main__":
             output_df.to_csv(output_path)
 
             realized_pl_sum, peak_exposure, realized_pl = compute_daily_pl(output_df, file_name, price)
-            daily_status = get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name)
+            daily_status = get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name, trade_env)
             daily_status_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H:%M:%S')} - {daily_status_file_name}")
             print(daily_status_path)
             daily_status.to_csv(daily_status_path, index=False)
