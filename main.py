@@ -1,6 +1,7 @@
 import time
 import os
 import argparse
+from rich.pretty import data
 import talib
 import re
 import pandas as pd
@@ -193,6 +194,9 @@ class MovingAverageStrategy:
             "trade_qty": self.trade_qty,
             "action": action,
             "order_id": order_data['order_id'].iloc[0] if order_data is not None else None,
+            "order_status": order_data['order_status'].iloc[0] if order_data is not None else None,
+            "fee_amount": 0,
+            "fee_details": 0,
             "execution_time": "NA",
             "execution_price": "NA",
             "Position": "OPEN" if self.position_open else "CLOSED",
@@ -447,11 +451,11 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
     total_assets = acc.loc[0, 'total_assets']
 
     df = df.rename(columns=
-              {'pl_ratio': 'unrealized_pl'})
+              {'pl_ratio': 'unrealized_pl_ratio'})
     df['date'] = job_start_date
     df['total_assets'] = total_assets
     df['calculated_realized_pl_sum'] = realized_pl_sum
-    df['calculated_realized_pl'] = realized_pl
+    df['calculated_realized_pl_ratio'] = realized_pl
     df['calculated_peak_exposure'] = peak_exposure
 
     files = list(Path(logs_folder).glob(f"*{daily_status_file_name}"))
@@ -473,10 +477,14 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
     if prev_df is not None:
         df = pd.concat([prev_df, df], ignore_index=True)
     
-    df['unrealized_pl_sum'] = df['unrealized_pl']/100 * df['market_val']
+    df['unrealized_pl_sum'] = df['unrealized_pl_ratio']/100 * df['market_val']
     df['asset_difference'] = df['total_assets'].diff()
     df['asset_difference_ratio'] = df['total_assets'].pct_change() * 100
     df['calculated_pl_sum'] = df['calculated_realized_pl_sum'] + df['unrealized_pl_sum']
+
+    df = df[['date', 'code', 'qty', 'nominal_price', 'cost_price', 'market_val', 'unrealized_pl_ratio', 'unrealized_pl_sum',
+             'calculated_realized_pl_ratio', 'calculated_realized_pl_sum', 'calculated_peak_exposure', 'calculated_pl_sum',
+             'total_assets', 'asset_difference', 'asset_difference_ratio']]
     return df
 # ============================================================
 # QUOTE CALLBACK
@@ -549,15 +557,16 @@ class KlineHandler(CurKlineHandlerBase):
         return RET_OK, data
 
 # ============================================================
-# ORDER CALLBACK (LIVE MODE ONLY)
+# ORDER CALLBACK
 # ============================================================
 class OrderHandler(TradeOrderHandlerBase):
     
-    def __init__(self, strategy, trade_ctx, lot_size):
+    def __init__(self, strategy, trade_ctx, lot_size, trade_env):
         super().__init__()
         self.strategy = strategy
         self.trade_ctx = trade_ctx
         self.lot_size = lot_size
+        self.trade_env = trade_env
 
     def on_recv_rsp(self, rsp_pb):
         ret, data = super().on_recv_rsp(rsp_pb)
@@ -565,9 +574,25 @@ class OrderHandler(TradeOrderHandlerBase):
             print("❌ Order callback error:", data)
             return RET_ERROR, data
         
-        if data['order_status'].iloc[0] == "FILLED_ALL":
-            for o in self.strategy.output:
-                if o['order_id'] == data['order_id'].iloc[0]:
+        if len(data) != 1:
+            print("❌ Order callback error: unexpected data length:", len(data))
+            return RET_ERROR, data
+        
+        for o in self.strategy.output:
+            if o['order_id'] == data['order_id'].iloc[0]:
+                order_status = data['order_status'].iloc[0]
+                o['order_status'] = order_status
+
+                # Real env ==> in DealHandler, not here
+                if self.trade_env == TrdEnv.REAL:
+                    ret2, order_fee = self.trade_ctx.order_fee_query(data['order_id'].iloc[0])
+                    if ret2 != RET_OK:
+                        print("❌ Order Fee error:", order_fee)
+                        return RET_ERROR, order_fee
+                    o['fee_amount'] = order_fee['fee_amount'].iloc[0]
+                    o['fee_details'] = order_fee['fee_details'].iloc[0]
+
+                elif self.trade_env == TrdEnv.SIMULATE and order_status == "FILLED_ALL":
                     action = data['trd_side'].iloc[0]
                     current_price = data['dealt_avg_price'].iloc[0]
 
@@ -601,7 +626,59 @@ class OrderHandler(TradeOrderHandlerBase):
                     break
 
         return RET_OK, data
-         
+
+# ============================================================
+# DEAL CALLBACK (REAL ENV ONLY)
+# ============================================================
+class DealHandler(TradeDealHandlerBase):
+    def __init__(self, strategy, trade_ctx, lot_size):
+        super().__init__()
+        self.strategy = strategy
+        self.trade_ctx = trade_ctx
+        self.lot_size = lot_size
+
+    def on_recv_rsp(self, rsp_pb):
+        ret, data = super(DealHandler, self).on_recv_rsp(rsp_pb)
+        if ret != RET_OK:
+            print("❌ Deal callback error:", data)
+            return RET_ERROR, data
+        
+        for o in self.strategy.output:
+            if o['order_id'] == data['order_id'].iloc[0]:
+
+                action = data['trd_side'].iloc[0]
+                current_price = data['price'].iloc[0]
+
+                # realized -> get cost_price after compute pl
+                self.strategy.realized_pl_pct = self.strategy.compute_pl(current_price)
+                match action:
+                    # update cost price if BUY
+                    case 'BUY':
+                        # Total price changes after BUY AND SELL
+                        self.strategy.total_price += current_price * self.strategy.trade_qty
+                        # Cost price changes after BUY, but not after SELL
+                        self.strategy.cost_price = self.strategy.total_price /(self.strategy.max_position_sell + self.strategy.trade_qty)
+                        o['cost_price'] = self.strategy.cost_price
+
+                    case 'SELL':
+                        # Total price changes after BUY AND SELL
+                        self.strategy.total_price -= self.strategy.cost_price * self.strategy.trade_qty
+                        # Cost price not updated after SELL
+
+                o['total_price'] = self.strategy.total_price
+                o['execution_time'] = data['updated_time'].iloc[0]
+                o['execution_price'] = current_price
+                o['realized_pl_pct'] = self.strategy.realized_pl_pct
+                o['Position'] = "OPEN" if self.strategy.position_open else "CLOSED"
+                
+                print(f"{SYMBOL} | Price:{o['execution_price']:.2f} "
+                f"| Action:{action} "
+                f"| Time:{o['execution_time']}")
+                if action == 'SELL':
+                    print(f"|Cost Price:{o['cost_price']}, Sell Price:{o['execution_price']},  Profit:{o['realized_pl_pct']:.2f}")
+                break
+        
+        return RET_OK, data
 # ============================================================
 # START
 # ============================================================
@@ -639,11 +716,14 @@ def start(job_start_date, trade_env):
     df_current, last_day = initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size)
 
     if live_mode:    
-        trade_ctx.set_handler(OrderHandler(strategy, trade_ctx, lot_size))
+        trade_ctx.set_handler(OrderHandler(strategy, trade_ctx, lot_size, trade_env))
         quote_ctx.set_handler(KlineHandler(strategy, quote_ctx, trade_ctx, lot_size))
         ret, data = quote_ctx.subscribe([SYMBOL], [SubType.K_1M], subscribe_push=True)
         if ret != RET_OK:
             print(f"Subscription failed: {data}")
+
+    if trade_env == TrdEnv.REAL:
+        trade_ctx.set_handler(DealHandler(strategy, trade_ctx, lot_size))
 
     mode = "LIVE TRADING" if live_mode else "SIMULATION MODE"
     print(f"🚀 Started ({mode})")
