@@ -1,7 +1,6 @@
 import time
 import os
 import argparse
-from rich.pretty import data
 import talib
 import re
 import pandas as pd
