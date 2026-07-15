@@ -513,10 +513,14 @@ class KlineHandler(CurKlineHandlerBase):
             self.strategy.save_output(self.prev_candle, action, order_data=None)
 
         if current_candle['time_key'] != self.prev_candle['time_key']:
-            print(f"Current time: {self.prev_candle['time_key']}, Current price:  {self.prev_candle['close']}")
+            
+            candle_to_process = self.prev_candle
+            # Mark this candle as processed immediately
+            self.prev_candle = current_candle
+            print(f"Current time: {candle_to_process['time_key']}, Current price:  {candle_to_process['close']}")
             
             # Update state
-            self.strategy.update_state_from_row(self.prev_candle, init=False)
+            self.strategy.update_state_from_row(candle_to_process, init=False)
             current_price = self.strategy.prices[-1]
 
             # Get market trend
@@ -549,9 +553,7 @@ class KlineHandler(CurKlineHandlerBase):
                 order_data = None
                 self.strategy.realized_pl_pct = 0
                 self.strategy.trade_qty = 0
-            self.strategy.save_output(self.prev_candle, action, order_data)
-        
-        self.prev_candle = current_candle
+            self.strategy.save_output(candle_to_process, action, order_data)
 
         return RET_OK, data
 
