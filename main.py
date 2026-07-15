@@ -210,7 +210,7 @@ class MovingAverageStrategy:
 # MATCHING YOUR place_order FUNCTION
 # ============================================================
 def place_order(trade_ctx, price, symbol, qty, side, order_type, trd_env):
-    """Place a LIMIT/MARKET order in SIMULATE mode"""
+    """Place a LIMIT/MARKET order"""
     ret, data = trade_ctx.place_order(
         price=price,
         qty=qty,
@@ -380,8 +380,7 @@ def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
     print("Initialized time: ", df_past['time_key'].iloc[-1])
     return df_current, last_day
 
-def compute_daily_pl(output_df, file_name, price):
-    output_filename = file_name.split('_')[0]
+def compute_daily_pl(output_df, price):
 
     sell_df = output_df.loc[output_df['action'] == 'SELL'].copy()
 
@@ -408,38 +407,41 @@ def compute_daily_pl(output_df, file_name, price):
         realized_pl = 0
 
     print(f"Total Return: {realized_pl_sum:.0f}, {realized_pl:.3f}%")
-    output_path = os.path.join(os.getcwd(), 'logs', f"{pd.Timestamp.today().strftime('%Y-%m-%d %H:%M:%S')} - pl_{output_filename}.csv")
-    sell_df.to_csv(output_path)
 
-    return realized_pl_sum, peak_exposure, realized_pl
+    return sell_df, realized_pl_sum, peak_exposure, realized_pl
 
 def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name, trade_env):
     # Open positions
     ret, positions = trade_ctx.position_list_query(trd_env=trade_env)
-
     if ret != RET_OK:
         print("Error fetching positions:", positions)
+        return None  # or handle the error appropriately
 
     columns = [
-        'code',
-        'qty',
-        'nominal_price',
-        'cost_price',
-        'market_val',
-        'pl_ratio'
+        "code",
+        "qty",
+        "nominal_price",
+        "cost_price",
+        "market_val",
+        "pl_ratio",
     ]
 
-    if positions.empty or (positions['qty'] > 0).sum() == 0:
+    # Filter to the target symbol with a positive position
+    df = positions.loc[
+        (positions["code"] == SYMBOL),
+        columns
+    ].copy()
+
+    # Create a default row if no position exists
+    if df.empty:
         df = pd.DataFrame([{
-            'code': SYMBOL,
-            'qty': 0,
-            'nominal_price': 0,
-            'cost_price': 0,
-            'market_val': 0,
-            'pl_ratio': 0
+            "code": SYMBOL,
+            "qty": 0,
+            "nominal_price": 0,
+            "cost_price": 0,
+            "market_val": 0,
+            "pl_ratio": 0,
         }])
-    else:
-        df = positions[columns].loc[positions['qty'] > 0].copy()
     
     # Total assets
     ret, acc = trade_ctx.accinfo_query(trd_env=trade_env)
@@ -702,7 +704,7 @@ def start(job_start_date, trade_env):
             security_firm=SecurityFirm.FUTUSG
     )
     if trade_env == TrdEnv.REAL:
-        ret, data = trade_ctx.unlock_trade(pwd_unlock)
+        ret, data = trade_ctx.unlock_trade(password_md5=pwd_unlock)
         if ret != RET_OK:
             print(f"Unlock trade failed: {data}")
 
@@ -810,10 +812,14 @@ if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description='Run the trading bot in live or test mode.')
     argparser.add_argument('--live', default=False, action='store_true', help='Run the bot in live mode (default is test mode)')
     argparser.add_argument('--date', default=pd.Timestamp.today(), help='Current date, or previous date for backtesting')
-    argparser.add_argument('--env', default=TrdEnv.SIMULATE, help='Trading environment (default is SIMULATE)')
+    argparser.add_argument('--env', default='simulate', help='Trading environment (default is SIMULATE)')
     args = argparser.parse_args()
     live_mode = args.live
-    trade_env = args.env
+    match args.env:
+        case 'real':
+            trade_env = TrdEnv.REAL
+        case 'simulate':
+            trade_env = TrdEnv.SIMULATE
 
     if SYMBOL.startswith("HK."):
         timezone_date = pd.to_datetime(args.date).tz_localize("Asia/Hong_Kong")
@@ -833,23 +839,28 @@ if __name__ == "__main__":
         if len(strategy.output):
             output_df = pd.DataFrame(strategy.output)
             output_df['time_SG'] = pd.to_datetime(output_df['time']).dt.tz_localize('America/New_York').dt.tz_convert('Asia/Singapore')
+            
             if live_mode:
-                file_name = 'live_trading_logs.csv'
-                daily_status_file_name = 'live_daily_status.csv'
-                price = 'execution_price'
+                mode = "live"
+                price = "execution_price"
             else:
-                file_name = 'simulated_trading_logs.csv'
-                daily_status_file_name = 'simulated_daily_status.csv'
-                price = 'close'
-            logs_folder = os.path.join(os.getcwd(), 'logs')
-            output_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H:%M:%S')} - {file_name}")
-            print(output_path)
-            output_df.to_csv(output_path)
+                mode = "backtest"
+                price = "close"
 
-            realized_pl_sum, peak_exposure, realized_pl = compute_daily_pl(output_df, file_name, price)
+            trading_logs_file_name = f"{mode}_{args.env}_trading_logs.csv"
+            pl_file_name = f"{mode}_{args.env}_pl.csv"
+            daily_status_file_name = f"{mode}_{args.env}_daily_status.csv"
+
+            logs_folder = os.path.join(os.getcwd(), 'logs')
+            trading_logs_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H_%M_%S')} - {trading_logs_file_name}")
+            output_df.to_csv(trading_logs_path)
+
+            sell_df, realized_pl_sum, peak_exposure, realized_pl = compute_daily_pl(output_df, price)
+            pl_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H_%M_%S')} - {pl_file_name}")
+            sell_df.to_csv(pl_path)
+
             daily_status = get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name, trade_env)
-            daily_status_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H:%M:%S')} - {daily_status_file_name}")
-            print(daily_status_path)
+            daily_status_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H_%M_%S')} - {daily_status_file_name}")
             daily_status.to_csv(daily_status_path, index=False)
 
             quote_ctx.close()
