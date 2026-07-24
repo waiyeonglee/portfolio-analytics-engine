@@ -423,7 +423,7 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
         "nominal_price",
         "cost_price",
         "market_val",
-        "pl_ratio",
+        "pl_ratio_avg_cost",
     ]
 
     # Filter to the target symbol with a positive position
@@ -483,9 +483,6 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
     df['asset_difference_ratio'] = df['total_assets'].pct_change() * 100
     df['calculated_pl_sum'] = df['calculated_realized_pl_sum'] + df['unrealized_pl_sum']
 
-    df = df.rename(columns=
-        {'cost_price': 'average_cost'})
-    
     df = df[['date', 'code', 'qty', 'nominal_price', 'average_cost', 'market_val', 'unrealized_pl_ratio', 'unrealized_pl_sum',
              'calculated_realized_pl_ratio', 'calculated_realized_pl_sum', 'calculated_peak_exposure', 'calculated_pl_sum',
              'total_assets', 'asset_difference', 'asset_difference_ratio']]
