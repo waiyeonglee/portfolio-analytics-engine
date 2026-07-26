@@ -422,7 +422,9 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
         "qty",
         "nominal_price",
         "cost_price",
+        "average_cost",
         "market_val",
+        "pl_ratio",
         "pl_ratio_avg_cost",
     ]
 
@@ -438,9 +440,11 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
             "code": SYMBOL,
             "qty": 0,
             "nominal_price": 0,
+            "cost_price": 0,
             "average_cost": 0,
             "market_val": 0,
             "pl_ratio_avg_cost": 0,
+            "pl_ratio": 0,
         }])
     
     # Total assets
@@ -451,8 +455,23 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
 
     total_assets = acc.loc[0, 'total_assets']
 
-    df = df.rename(columns=
-        {'pl_ratio_avg_cost': 'unrealized_pl_ratio'})
+    # Create final cost
+    df["final_cost_price"] = df["average_cost"].mask(
+        df["average_cost"] == 0,
+        df["cost_price"]
+    )
+
+    # Create final P/L ratio
+    df["unrealized_pl_ratio"] = df["pl_ratio_avg_cost"].mask(
+        df["pl_ratio_avg_cost"] == 0,
+        df["pl_ratio"]
+    )
+    # Convert to numeric
+    df["unrealized_pl_ratio"] = pd.to_numeric(
+        df["unrealized_pl_ratio"],
+        errors="coerce"
+    )
+
     df['date'] = job_start_date
     df['total_assets'] = total_assets
     df['calculated_realized_pl_sum'] = realized_pl_sum
@@ -483,7 +502,7 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
     df['asset_difference_ratio'] = df['total_assets'].pct_change() * 100
     df['calculated_pl_sum'] = df['calculated_realized_pl_sum'] + df['unrealized_pl_sum']
 
-    df = df[['date', 'code', 'qty', 'nominal_price', 'average_cost', 'market_val', 'unrealized_pl_ratio', 'unrealized_pl_sum',
+    df = df[['date', 'code', 'qty', 'nominal_price', 'cost_price', 'average_cost', 'final_cost_price', 'market_val', 'pl_ratio', 'pl_ratio_avg_cost', 'unrealized_pl_ratio', 'unrealized_pl_sum',
              'calculated_realized_pl_ratio', 'calculated_realized_pl_sum', 'calculated_peak_exposure', 'calculated_pl_sum',
              'total_assets', 'asset_difference', 'asset_difference_ratio']]
     return df
