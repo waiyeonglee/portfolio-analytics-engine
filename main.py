@@ -455,21 +455,18 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
 
     total_assets = acc.loc[0, 'total_assets']
 
-    # Create final cost
-    df["final_cost_price"] = df["average_cost"].mask(
-        df["average_cost"] == 0,
+    avg = pd.to_numeric(df["average_cost"], errors="coerce")
+
+    df["final_cost_price"] = avg.mask(
+        avg.isna(),
         df["cost_price"]
     )
 
-    # Create final P/L ratio
-    df["unrealized_pl_ratio"] = df["pl_ratio_avg_cost"].mask(
-        df["pl_ratio_avg_cost"] == 0,
+    pl_avg = pd.to_numeric(df["pl_ratio_avg_cost"], errors="coerce")
+    
+    df["unrealized_pl_ratio"] = pl_avg.mask(
+        pl_avg.isna(),
         df["pl_ratio"]
-    )
-    # Convert to numeric
-    df["unrealized_pl_ratio"] = pd.to_numeric(
-        df["unrealized_pl_ratio"],
-        errors="coerce"
     )
 
     df['date'] = job_start_date
