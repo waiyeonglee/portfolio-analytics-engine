@@ -508,12 +508,13 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
 # ============================================================
 class KlineHandler(CurKlineHandlerBase):
     
-    def __init__(self, strategy, quote_ctx, trade_ctx, lot_size):
+    def __init__(self, strategy, quote_ctx, trade_ctx, lot_size, trade_env):
         super().__init__()
         self.strategy = strategy
         self.quote_ctx = quote_ctx
         self.trade_ctx = trade_ctx
         self.lot_size = lot_size
+        self.trade_env = trade_env
         self.prev_candle = None
 
     def on_recv_rsp(self, rsp_pb):
@@ -527,9 +528,11 @@ class KlineHandler(CurKlineHandlerBase):
         if self.prev_candle is None:
             # first candle, no action, just save output
             self.prev_candle = current_candle
-            action ='HOLD'
+            action ='INITIALIZING'
             self.strategy.save_output(self.prev_candle, action, order_data=None)
 
+            return RET_OK, data
+        
         if current_candle['time_key'] != self.prev_candle['time_key']:
             
             candle_to_process = self.prev_candle
@@ -543,36 +546,33 @@ class KlineHandler(CurKlineHandlerBase):
 
             # Get market trend
             self.strategy.market_trend = get_market_trend_live(self.quote_ctx)
-
-            # get available qty for buy/sell        
-            self.strategy.max_cash_buy, self.strategy.max_position_sell = get_available_qty(self.trade_ctx, current_price, self.lot_size, self.trade_ctx.get_trading_env())
             
+            # get available qty for buy/sell        
+            self.strategy.max_cash_buy, self.strategy.max_position_sell = get_available_qty(self.trade_ctx, current_price, self.lot_size, self.trade_env)
             # update cost price if max_position_sell is 0 (position closed)
             if self.strategy.max_position_sell == 0:
                 self.strategy.cost_price = 0
-
             # compute unrealized P/L before buy_or_sell decision
             self.strategy.unrealized_pl_pct = self.strategy.compute_pl(current_price)    
+            
             # Decide action
             action, buy_qty, sell_qty = self.strategy.buy_or_sell(self.strategy.unrealized_pl_pct)
-
             BUY_QTY = self.lot_size * buy_qty
             SELL_QTY = self.lot_size * sell_qty
             # Execute action in live mode
             if action == "BUY":
                 print("Max QTY to Buy:", self.strategy.max_cash_buy)
-                order_data = place_order(self.trade_ctx, self.strategy.prices[-1], SYMBOL, BUY_QTY, TrdSide.BUY, OrderType.MARKET, trade_env)
+                order_data = place_order(self.trade_ctx, self.strategy.prices[-1], SYMBOL, BUY_QTY, TrdSide.BUY, OrderType.MARKET, self.trade_env)
                 self.strategy.trade_qty = BUY_QTY
             elif action == "SELL":
                 print("Max QTY to Sell:", self.strategy.max_position_sell)
-                order_data = place_order(self.trade_ctx, self.strategy.prices[-1], SYMBOL, SELL_QTY, TrdSide.SELL, OrderType.MARKET, trade_env)
+                order_data = place_order(self.trade_ctx, self.strategy.prices[-1], SYMBOL, SELL_QTY, TrdSide.SELL, OrderType.MARKET, self.trade_env)
                 self.strategy.trade_qty = SELL_QTY
             else:
                 order_data = None
                 self.strategy.realized_pl_pct = 0
                 self.strategy.trade_qty = 0
             self.strategy.save_output(candle_to_process, action, order_data)
-
         return RET_OK, data
 
 # ============================================================
@@ -736,7 +736,7 @@ def start(job_start_date, trade_env):
 
     if live_mode:    
         trade_ctx.set_handler(OrderHandler(strategy, trade_ctx, lot_size, trade_env))
-        quote_ctx.set_handler(KlineHandler(strategy, quote_ctx, trade_ctx, lot_size))
+        quote_ctx.set_handler(KlineHandler(strategy, quote_ctx, trade_ctx, lot_size, trade_env))
         ret, data = quote_ctx.subscribe([SYMBOL], [SubType.K_1M], subscribe_push=True)
         if ret != RET_OK:
             print(f"Subscription failed: {data}")
@@ -745,7 +745,7 @@ def start(job_start_date, trade_env):
         trade_ctx.set_handler(DealHandler(strategy, trade_ctx, lot_size))
 
     mode = "LIVE TRADING" if live_mode else "SIMULATION MODE"
-    print(f"🚀 Started ({mode})")
+    print(f"🚀 Started ({mode} in environment: {trade_env})")
     print("Press Ctrl+C to exit.")
     if live_mode:
         while True:
