@@ -11,8 +11,6 @@ from pathlib import Path
 from config import pwd_unlock
 
 # ================= CONFIG =================
-# SYMBOL = "HK.00700"
-SYMBOL = "US.AAPL"
 RSI_threshold_follow = 55
 RSI_threshold_revert = 35
 RSI_PERIOD = 14
@@ -209,7 +207,7 @@ class MovingAverageStrategy:
 # ============================================================
 # MATCHING YOUR place_order FUNCTION
 # ============================================================
-def place_order(trade_ctx, price, symbol, qty, side, order_type, trd_env):
+def place_order(trade_ctx, price, symbol, qty, side, order_type):
     """Place a LIMIT/MARKET order"""
     ret, data = trade_ctx.place_order(
         price=price,
@@ -217,7 +215,7 @@ def place_order(trade_ctx, price, symbol, qty, side, order_type, trd_env):
         code=symbol,
         trd_side=side,
         order_type=order_type,
-        trd_env=trd_env
+        trd_env=trade_env
     )
     if ret == RET_OK:
         print(f"✅ Order executed: {side} {qty} {symbol}")
@@ -225,7 +223,7 @@ def place_order(trade_ctx, price, symbol, qty, side, order_type, trd_env):
         print(f"❌ Order failed: {side} {symbol} | {data}")
     return data
 
-def get_position_status(trade_ctx, trade_env):
+def get_position_status(trade_ctx):
     """Check if there's an open position for the symbol and return positions"""
     ret, positions = trade_ctx.position_list_query(trd_env=trade_env)
     if ret != RET_OK:
@@ -241,7 +239,7 @@ def get_position_status(trade_ctx, trade_env):
             break
     return cost_price
     
-def get_available_qty(trade_ctx, current_price, lot_size, trade_env):
+def get_available_qty(trade_ctx, current_price, lot_size):
     ret, max_qty_to_trade = trade_ctx.acctradinginfo_query(order_type=OrderType.NORMAL, code=SYMBOL, price=current_price, trd_env=trade_env)
     if ret != RET_OK:
         print("Error fetching trading info:", max_qty_to_trade)
@@ -346,7 +344,7 @@ def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
 
         # Cannot call so many times in init, so only call once, since get_available_qty doesnt change during init
         if i == 0:
-            max_cash_buy, max_position_sell = get_available_qty(trade_ctx, current_price, lot_size, trade_env)
+            max_cash_buy, max_position_sell = get_available_qty(trade_ctx, current_price, lot_size)
             if live_mode:
                 strategy.max_cash_buy = max_cash_buy
                 strategy.max_position_sell = max_position_sell
@@ -357,7 +355,7 @@ def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
         if live_mode:
             # only call cost_price once during init, since cost_price is updated in OrderHandler after BUY/SELL
             # get_position_status also updates position_open
-            strategy.cost_price = get_position_status(trade_ctx, trade_env)
+            strategy.cost_price = get_position_status(trade_ctx)
             # compute unrealized P/L before buy_or_sell decision
             strategy.unrealized_pl_pct = strategy.compute_pl(current_price)
         else:   
@@ -410,7 +408,7 @@ def compute_daily_pl(output_df, price):
 
     return sell_df, realized_pl_sum, peak_exposure, realized_pl
 
-def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name, trade_env):
+def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name):
     # Open positions
     ret, positions = trade_ctx.position_list_query(trd_env=trade_env)
     if ret != RET_OK:
@@ -508,13 +506,12 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
 # ============================================================
 class KlineHandler(CurKlineHandlerBase):
     
-    def __init__(self, strategy, quote_ctx, trade_ctx, lot_size, trade_env):
+    def __init__(self, strategy, quote_ctx, trade_ctx, lot_size):
         super().__init__()
         self.strategy = strategy
         self.quote_ctx = quote_ctx
         self.trade_ctx = trade_ctx
         self.lot_size = lot_size
-        self.trade_env = trade_env
         self.prev_candle = None
 
     def on_recv_rsp(self, rsp_pb):
@@ -548,7 +545,7 @@ class KlineHandler(CurKlineHandlerBase):
             self.strategy.market_trend = get_market_trend_live(self.quote_ctx)
             
             # get available qty for buy/sell        
-            self.strategy.max_cash_buy, self.strategy.max_position_sell = get_available_qty(self.trade_ctx, current_price, self.lot_size, self.trade_env)
+            self.strategy.max_cash_buy, self.strategy.max_position_sell = get_available_qty(self.trade_ctx, current_price, self.lot_size, trade_env)
             # update cost price if max_position_sell is 0 (position closed)
             if self.strategy.max_position_sell == 0:
                 self.strategy.cost_price = 0
@@ -562,11 +559,11 @@ class KlineHandler(CurKlineHandlerBase):
             # Execute action in live mode
             if action == "BUY":
                 print("Max QTY to Buy:", self.strategy.max_cash_buy)
-                order_data = place_order(self.trade_ctx, self.strategy.prices[-1], SYMBOL, BUY_QTY, TrdSide.BUY, OrderType.MARKET, self.trade_env)
+                order_data = place_order(self.trade_ctx, self.strategy.prices[-1], SYMBOL, BUY_QTY, TrdSide.BUY, OrderType.MARKET)
                 self.strategy.trade_qty = BUY_QTY
             elif action == "SELL":
                 print("Max QTY to Sell:", self.strategy.max_position_sell)
-                order_data = place_order(self.trade_ctx, self.strategy.prices[-1], SYMBOL, SELL_QTY, TrdSide.SELL, OrderType.MARKET, self.trade_env)
+                order_data = place_order(self.trade_ctx, self.strategy.prices[-1], SYMBOL, SELL_QTY, TrdSide.SELL, OrderType.MARKET)
                 self.strategy.trade_qty = SELL_QTY
             else:
                 order_data = None
@@ -580,12 +577,11 @@ class KlineHandler(CurKlineHandlerBase):
 # ============================================================
 class OrderHandler(TradeOrderHandlerBase):
     
-    def __init__(self, strategy, trade_ctx, lot_size, trade_env):
+    def __init__(self, strategy, trade_ctx, lot_size):
         super().__init__()
         self.strategy = strategy
         self.trade_ctx = trade_ctx
         self.lot_size = lot_size
-        self.trade_env = trade_env
 
     def on_recv_rsp(self, rsp_pb):
         ret, data = super().on_recv_rsp(rsp_pb)
@@ -603,7 +599,7 @@ class OrderHandler(TradeOrderHandlerBase):
                 o['order_status'] = order_status
 
                 # Real env ==> in DealHandler, not here
-                if self.trade_env == TrdEnv.REAL:
+                if trade_env == TrdEnv.REAL:
                     ret2, order_fee = self.trade_ctx.order_fee_query(data['order_id'].iloc[0])
                     if ret2 != RET_OK:
                         print("❌ Order Fee error:", order_fee)
@@ -611,7 +607,7 @@ class OrderHandler(TradeOrderHandlerBase):
                     o['fee_amount'] = order_fee['fee_amount'].iloc[0]
                     o['fee_details'] = order_fee['fee_details'].iloc[0]
 
-                elif self.trade_env == TrdEnv.SIMULATE and order_status == "FILLED_ALL":
+                elif trade_env == TrdEnv.SIMULATE and order_status == "FILLED_ALL":
                     action = data['trd_side'].iloc[0]
                     current_price = data['dealt_avg_price'].iloc[0]
 
@@ -702,7 +698,7 @@ class DealHandler(TradeDealHandlerBase):
 # START
 # ============================================================
 
-def start(job_start_date, trade_env):
+def start(job_start_date):
     if SYMBOL.startswith("HK."):
         trade_market = TrdMarket.HK
         market = 'market_hk'
@@ -735,8 +731,8 @@ def start(job_start_date, trade_env):
     df_current, last_day = initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size)
 
     if live_mode:    
-        trade_ctx.set_handler(OrderHandler(strategy, trade_ctx, lot_size, trade_env))
-        quote_ctx.set_handler(KlineHandler(strategy, quote_ctx, trade_ctx, lot_size, trade_env))
+        trade_ctx.set_handler(OrderHandler(strategy, trade_ctx, lot_size))
+        quote_ctx.set_handler(KlineHandler(strategy, quote_ctx, trade_ctx, lot_size))
         ret, data = quote_ctx.subscribe([SYMBOL], [SubType.K_1M], subscribe_push=True)
         if ret != RET_OK:
             print(f"Subscription failed: {data}")
@@ -834,8 +830,10 @@ if __name__ == "__main__":
     match args.env:
         case 'real':
             trade_env = TrdEnv.REAL
+            SYMBOL = "US.META"
         case 'simulate':
             trade_env = TrdEnv.SIMULATE
+            SYMBOL = "US.AAPL"
 
     if SYMBOL.startswith("HK."):
         timezone_date = pd.to_datetime(args.date).tz_localize("Asia/Hong_Kong")
@@ -848,7 +846,7 @@ if __name__ == "__main__":
         job_start_date = pd.to_datetime(str(timezone_date) + ' 23:59:00')
     
     try:
-        strategy, quote_ctx, trade_ctx = start(job_start_date, trade_env)
+        strategy, quote_ctx, trade_ctx = start(job_start_date)
     except KeyboardInterrupt:
         print("Stopped by user.")
     finally:
