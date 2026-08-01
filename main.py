@@ -873,7 +873,7 @@ if __name__ == "__main__":
             pl_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H_%M_%S')} - {pl_file_name}")
             sell_df.to_csv(pl_path)
 
-            daily_status = get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name, trade_env)
+            daily_status = get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, logs_folder, daily_status_file_name)
             daily_status_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H_%M_%S')} - {daily_status_file_name}")
             daily_status.to_csv(daily_status_path, index=False)
 
