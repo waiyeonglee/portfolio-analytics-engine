@@ -545,7 +545,7 @@ class KlineHandler(CurKlineHandlerBase):
             self.strategy.market_trend = get_market_trend_live(self.quote_ctx)
             
             # get available qty for buy/sell        
-            self.strategy.max_cash_buy, self.strategy.max_position_sell = get_available_qty(self.trade_ctx, current_price, self.lot_size, trade_env)
+            self.strategy.max_cash_buy, self.strategy.max_position_sell = get_available_qty(self.trade_ctx, current_price, self.lot_size)
             # update cost price if max_position_sell is 0 (position closed)
             if self.strategy.max_position_sell == 0:
                 self.strategy.cost_price = 0
