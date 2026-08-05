@@ -600,7 +600,7 @@ class OrderHandler(TradeOrderHandlerBase):
 
                 # Real env ==> in DealHandler, not here
                 if trade_env == TrdEnv.REAL:
-                    ret2, order_fee = self.trade_ctx.order_fee_query(data['order_id'].iloc[0])
+                    ret2, order_fee = self.trade_ctx.order_fee_query([data['order_id'].iloc[0]])
                     if ret2 != RET_OK:
                         print("❌ Order Fee error:", order_fee)
                         return RET_ERROR, order_fee
@@ -657,7 +657,9 @@ class DealHandler(TradeDealHandlerBase):
         if ret != RET_OK:
             print("❌ Deal callback error:", data)
             return RET_ERROR, data
-        
+
+        print("Deal callback received!")
+
         for o in self.strategy.output:
             if o['order_id'] == data['order_id'].iloc[0]:
 
@@ -681,7 +683,7 @@ class DealHandler(TradeDealHandlerBase):
                         # Cost price not updated after SELL
 
                 o['total_price'] = self.strategy.total_price
-                o['execution_time'] = data['updated_time'].iloc[0]
+                o['execution_time'] = data['create_time'].iloc[0]
                 o['execution_price'] = current_price
                 o['realized_pl_pct'] = self.strategy.realized_pl_pct
                 o['Position'] = "OPEN" if self.strategy.position_open else "CLOSED"
