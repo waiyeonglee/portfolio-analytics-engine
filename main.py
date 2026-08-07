@@ -428,7 +428,7 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
 
     # Filter to the target symbol with a positive position
     df = positions.loc[
-        (positions["code"] == SYMBOL),
+        (positions["code"] == SYMBOL) & (positions["qty"] > 0),
         columns
     ].copy()
 
