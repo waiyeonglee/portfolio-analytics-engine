@@ -446,7 +446,7 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
         }])
     
     # Total assets
-    ret, acc = trade_ctx.accinfo_query(trd_env=trade_env, currency="USD")
+    ret, acc = trade_ctx.accinfo_query(trd_env=trade_env, currency="SGD")
 
     if ret != RET_OK:
         print("Error fetching account info:", acc)
