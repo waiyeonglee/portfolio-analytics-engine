@@ -6,7 +6,6 @@ import re
 import pandas as pd
 import numpy as np
 from moomoo import *
-from pandas.tseries.offsets import BDay
 from pathlib import Path
 from config import pwd_unlock
 
@@ -284,33 +283,17 @@ def get_market_trend_simulation(quote_ctx, last_day=None):
     return df_market
 
 def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
-    
-    prev_date = (job_start_date - BDay(5)).strftime('%Y-%m-%d')
-    end_date = job_start_date.strftime('%Y-%m-%d')
 
-    full_df = []
-    ret, historical_df, page_req_key = quote_ctx.request_history_kline(
+    ret, full_historical_df, _ = quote_ctx.request_history_kline(
         SYMBOL,
-        prev_date,
-        end_date,
+        job_start_date.strftime('%Y-%m-%d'),
+        job_start_date.strftime('%Y-%m-%d'),
         SubType.K_1M, 
         AuType.NONE
     )
-    full_df.append(historical_df)
-    while page_req_key != None: # Request all results after
-        ret, historical_df, page_req_key = quote_ctx.request_history_kline(
-        SYMBOL,
-        prev_date,
-        end_date,
-        SubType.K_1M, 
-        AuType.NONE,
-        page_req_key=page_req_key
-    )
-        if ret != RET_OK:
-            print("Error fetching historical data:", historical_df)
-        full_df.append(historical_df)
+    if ret != RET_OK:
+        print("Error fetching historical data:", full_historical_df)
 
-    full_historical_df = pd.concat(full_df, ignore_index=True)
     full_historical_df["time_key"] = pd.to_datetime(full_historical_df["time_key"])
     full_historical_df["date"] = full_historical_df["time_key"].dt.date
 
@@ -838,9 +821,9 @@ if __name__ == "__main__":
             SYMBOL = "US.AAPL"
 
     if SYMBOL.startswith("HK."):
-        timezone_date = pd.to_datetime(args.date).tz_localize("Asia/Hong_Kong")
+        timezone_date = pd.to_datetime(args.date).tz_localize("Asia/Singapore").tz_convert("Asia/Hong_Kong")
     elif SYMBOL.startswith("US."):
-        timezone_date = pd.to_datetime(args.date).tz_localize("America/New_York")
+        timezone_date = pd.to_datetime(args.date).tz_localize("Asia/Singapore").tz_convert("America/New_York")
 
     if live_mode:
         job_start_date = timezone_date
