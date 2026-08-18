@@ -590,38 +590,37 @@ class OrderHandler(TradeOrderHandlerBase):
                     o['fee_amount'] = order_fee['fee_amount'].iloc[0]
                     o['fee_details'] = order_fee['fee_details'].iloc[0]
 
-                elif trade_env == TrdEnv.SIMULATE and order_status == "FILLED_ALL":
-                    action = data['trd_side'].iloc[0]
-                    current_price = data['dealt_avg_price'].iloc[0]
+                action = data['trd_side'].iloc[0]
+                current_price = data['dealt_avg_price'].iloc[0]
 
-                    # realized -> get cost_price after compute pl
-                    self.strategy.realized_pl_pct = self.strategy.compute_pl(current_price)
-                    match action:
-                        # update cost price if BUY
-                        case 'BUY':
-                            # Total price changes after BUY AND SELL
-                            self.strategy.total_price += current_price * self.strategy.trade_qty
-                            # Cost price changes after BUY, but not after SELL
-                            self.strategy.cost_price = self.strategy.total_price /(self.strategy.max_position_sell + self.strategy.trade_qty)
-                            o['cost_price'] = self.strategy.cost_price
+                # realized -> get cost_price after compute pl
+                self.strategy.realized_pl_pct = self.strategy.compute_pl(current_price)
+                match action:
+                    # update cost price if BUY
+                    case 'BUY':
+                        # Total price changes after BUY AND SELL
+                        self.strategy.total_price += current_price * self.strategy.trade_qty
+                        # Cost price changes after BUY, but not after SELL
+                        self.strategy.cost_price = self.strategy.total_price /(self.strategy.max_position_sell + self.strategy.trade_qty)
+                        o['cost_price'] = self.strategy.cost_price
 
-                        case 'SELL':
-                            # Total price changes after BUY AND SELL
-                            self.strategy.total_price -= self.strategy.cost_price * self.strategy.trade_qty
-                            # Cost price not updated after SELL
+                    case 'SELL':
+                        # Total price changes after BUY AND SELL
+                        self.strategy.total_price -= self.strategy.cost_price * self.strategy.trade_qty
+                        # Cost price not updated after SELL
 
-                    o['total_price'] = self.strategy.total_price
-                    o['execution_time'] = data['updated_time'].iloc[0]
-                    o['execution_price'] = current_price
-                    o['realized_pl_pct'] = self.strategy.realized_pl_pct
-                    o['Position'] = "OPEN" if self.strategy.position_open else "CLOSED"
-                    
-                    print(f"{SYMBOL} | Price:{o['execution_price']:.2f} "
-                    f"| Action:{action} "
-                    f"| Time:{o['execution_time']}")
-                    if action == 'SELL':
-                        print(f"|Cost Price:{o['cost_price']}, Sell Price:{o['execution_price']},  Profit:{o['realized_pl_pct']:.2f}")
-                    break
+                o['total_price'] = self.strategy.total_price
+                o['execution_time'] = data['updated_time'].iloc[0]
+                o['execution_price'] = current_price
+                o['realized_pl_pct'] = self.strategy.realized_pl_pct
+                o['Position'] = "OPEN" if self.strategy.position_open else "CLOSED"
+                
+                print(f"{SYMBOL} | Price:{o['execution_price']:.2f} "
+                f"| Action:{action} "
+                f"| Time:{o['execution_time']}")
+                if action == 'SELL':
+                    print(f"|Cost Price:{o['cost_price']}, Sell Price:{o['execution_price']},  Profit:{o['realized_pl_pct']:.2f}")
+                break
 
         return RET_OK, data
 
