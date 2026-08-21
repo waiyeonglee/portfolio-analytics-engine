@@ -282,37 +282,59 @@ def get_market_trend_simulation(quote_ctx, last_day=None):
     df_market["time_key"] = pd.to_datetime(df_market["time_key"])
     return df_market
 
-def initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size):
+def initialize_rows(strategy, trade_ctx, quote_ctx, timezone_date, lot_size):
+
+    if live_mode:
+        api_start = timezone_date.strftime('%Y-%m-%d')
+        api_end = timezone_date.strftime('%Y-%m-%d')
+    else:
+        if timezone_date.time() >= pd.Timestamp("16:00").time():
+            # Running after 4pm (e.g. 3/8 5pm)
+            # Last completed session: today 9:30am - today 4pm
+            session_start = pd.Timestamp(timezone_date.date()).replace(hour=9, minute=30)
+            session_end = pd.Timestamp(timezone_date.date()).replace(hour=16, minute=0)
+        else:
+            # Running before 4pm (e.g. 3/8 2am or 3/8 11am)
+            # Last completed session: prev day 9:30am - prev day 4pm
+            session_start = (pd.Timestamp(timezone_date.date()) - pd.offsets.BDay(1)).replace(hour=9, minute=30)
+            session_end = (pd.Timestamp(timezone_date.date()) - pd.offsets.BDay(1)).replace(hour=16, minute=0)
+
+        api_start = session_start.strftime('%Y-%m-%d')
+        api_end = session_end.strftime('%Y-%m-%d')
 
     ret, full_historical_df, _ = quote_ctx.request_history_kline(
         SYMBOL,
-        job_start_date.strftime('%Y-%m-%d'),
-        job_start_date.strftime('%Y-%m-%d'),
-        SubType.K_1M, 
-        AuType.NONE
+        api_start,
+        api_end,
+        SubType.K_1M,
+        AuType.NONE,
+        session=Session.ALL
     )
     if ret != RET_OK:
         print("Error fetching historical data:", full_historical_df)
 
     full_historical_df["time_key"] = pd.to_datetime(full_historical_df["time_key"])
-    full_historical_df["date"] = full_historical_df["time_key"].dt.date
 
-    # Intialize first window_length-1 candles to fill the strategy state
+    # Initialise first window_length-1 candles to fill the strategy state
     if live_mode:
         df_past = full_historical_df.iloc[-window_length+1:].copy()
         df_current = None
         last_day = None
     else:
-        # get last 2 full trading days
-        counts = full_historical_df.groupby("date").size()
-        full_days = counts[counts >= 390].index.sort_values()
-        # second last FULL day
-        second_last_day = full_days[-2]   
-        prev_day_df = full_historical_df[full_historical_df["date"] == second_last_day]
-        df_past = prev_day_df.iloc[-window_length+1:].copy()
-        # last FULL day
-        last_day = full_days[-1]
-        df_current = full_historical_df[full_historical_df["date"] == last_day].copy()
+        pre_session_start = session_start.replace(hour=9, minute=0)
+        pre_session_end = session_start.replace(hour=9, minute=30)
+        
+        prev_session_df = full_historical_df[
+            (full_historical_df["time_key"] >= pre_session_start) &
+            (full_historical_df["time_key"] < pre_session_end)
+        ].copy()
+        
+        df_past = prev_session_df.iloc[-window_length+1:].copy()
+        df_current = full_historical_df[
+            (full_historical_df["time_key"] >= session_start) &
+            (full_historical_df["time_key"] <= session_end)
+        ].copy()
+        last_day = session_end
 
     for i in range(len(df_past)):
         
@@ -450,7 +472,7 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
         df["pl_ratio"]
     )
 
-    df['date'] = job_start_date
+    df['date'] = timezone_date
     df['total_assets'] = total_assets
     df['calculated_realized_pl_sum'] = realized_pl_sum
     df['calculated_realized_pl_ratio'] = realized_pl
@@ -682,7 +704,7 @@ class DealHandler(TradeDealHandlerBase):
 # START
 # ============================================================
 
-def start(job_start_date):
+def start(timezone_date):
     if SYMBOL.startswith("HK."):
         trade_market = TrdMarket.HK
         market = 'market_hk'
@@ -712,7 +734,7 @@ def start(job_start_date):
     lot_size = stock_data['lot_size'].iloc[0]
 
     # df_current and last_day only used for backtesting, not live mode
-    df_current, last_day = initialize_rows(strategy, trade_ctx, quote_ctx, job_start_date, lot_size)
+    df_current, last_day = initialize_rows(strategy, trade_ctx, quote_ctx, timezone_date, lot_size)
 
     if live_mode:    
         trade_ctx.set_handler(OrderHandler(strategy, trade_ctx, lot_size))
@@ -823,14 +845,9 @@ if __name__ == "__main__":
         timezone_date = pd.to_datetime(args.date).tz_localize("Asia/Singapore").tz_convert("Asia/Hong_Kong")
     elif SYMBOL.startswith("US."):
         timezone_date = pd.to_datetime(args.date).tz_localize("Asia/Singapore").tz_convert("America/New_York")
-
-    if live_mode:
-        job_start_date = timezone_date
-    else:
-        job_start_date = pd.to_datetime(str(timezone_date) + ' 23:59:00')
     
     try:
-        strategy, quote_ctx, trade_ctx = start(job_start_date)
+        strategy, quote_ctx, trade_ctx = start(timezone_date)
     except KeyboardInterrupt:
         print("Stopped by user.")
     finally:
