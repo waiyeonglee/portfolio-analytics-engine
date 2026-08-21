@@ -282,7 +282,7 @@ def get_market_trend_simulation(quote_ctx, last_day=None):
     df_market["time_key"] = pd.to_datetime(df_market["time_key"])
     return df_market
 
-def initialize_rows(strategy, trade_ctx, quote_ctx, timezone_date, lot_size):
+def initialize_rows(strategy, trade_ctx, quote_ctx, lot_size):
 
     if live_mode:
         api_start = timezone_date.strftime('%Y-%m-%d')
@@ -704,7 +704,7 @@ class DealHandler(TradeDealHandlerBase):
 # START
 # ============================================================
 
-def start(timezone_date):
+def start():
     if SYMBOL.startswith("HK."):
         trade_market = TrdMarket.HK
         market = 'market_hk'
@@ -734,7 +734,7 @@ def start(timezone_date):
     lot_size = stock_data['lot_size'].iloc[0]
 
     # df_current and last_day only used for backtesting, not live mode
-    df_current, last_day = initialize_rows(strategy, trade_ctx, quote_ctx, timezone_date, lot_size)
+    df_current, last_day = initialize_rows(strategy, trade_ctx, quote_ctx, lot_size)
 
     if live_mode:    
         trade_ctx.set_handler(OrderHandler(strategy, trade_ctx, lot_size))
@@ -847,7 +847,7 @@ if __name__ == "__main__":
         timezone_date = pd.to_datetime(args.date).tz_localize("Asia/Singapore").tz_convert("America/New_York")
     
     try:
-        strategy, quote_ctx, trade_ctx = start(timezone_date)
+        strategy, quote_ctx, trade_ctx = start()
     except KeyboardInterrupt:
         print("Stopped by user.")
     finally:
