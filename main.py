@@ -599,7 +599,7 @@ class OrderHandler(TradeOrderHandlerBase):
             return RET_ERROR, data
         
         for o in self.strategy.output:
-            if o['order_id'] == data['order_id'].iloc[0]:
+            if o['order_id'] == data['order_id'].iloc[0] and o['execution_time'] == 'NA':
                 order_status = data['order_status'].iloc[0]
                 o['order_status'] = order_status
 
