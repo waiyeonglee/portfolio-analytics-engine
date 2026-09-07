@@ -112,56 +112,91 @@ class MovingAverageStrategy:
 
     def buy_or_sell(self, pl_pct=0):
         action = "HOLD"
-        
-        # buy ratio 0 < x < 1
+
+        # --------------------------------------------------
+        # Buy sizing
+        # --------------------------------------------------
         trend_strength = self.macd - self.macd_signal
-        buy_ratio = max(0, min(0.7, abs(trend_strength/0.5)))
+
+        # Stronger MACD divergence -> larger position
+        # Maximum 70% of available buying capacity
+        buy_ratio = min(0.7, abs(trend_strength / 0.5))
+
         if self.max_cash_buy > 0:
             buy_qty = int(self.max_cash_buy * buy_ratio)
         else:
             buy_qty = 0
 
-        # sell ratio 0 < x < 1
-        sell_ratio = min(1, abs(pl_pct/LOSS_PCT))
-        if self.max_position_sell > 0:
-            sell_qty = max(1, int(self.max_position_sell * sell_ratio))
+
+        # --------------------------------------------------
+        # Sell sizing
+        # --------------------------------------------------
+        # Larger absolute P/L -> larger exit
+        sell_ratio = min(1.0, abs(pl_pct / LOSS_PCT))
+
+        if self.max_position_sell > 0 and sell_ratio > 0:
+            sell_qty = max(
+                1,
+                int(self.max_position_sell * sell_ratio)
+            )
         else:
             sell_qty = 0
-        
-        # A: trend following
+
+
+        # --------------------------------------------------
+        # Buy signal
+        # --------------------------------------------------
+
+        # A: Trend following
         if self.market_trend > 0:
             buy_signal = (
                 buy_qty > 0
                 and trend_strength > 0
                 and self.rsi > RSI_threshold_follow
             )
-        # B: mean reversion
+
+        # B: Mean reversion
         else:
-             buy_signal = (
+            buy_signal = (
                 buy_qty > 0
                 and trend_strength < 0
                 and self.rsi < RSI_threshold_revert
             )
 
-        # if pl_pct >= PROFIT_PCT, only sell when hit loss pct or above, regardless of MACD signal (take profit)
+
+        # --------------------------------------------------
+        # Sell signal
+        # --------------------------------------------------
+
         if pl_pct >= PROFIT_PCT:
+            # Protect profits: exit when momentum reverses
             sell_signal = (
                 sell_qty > 0
                 and self.macd < self.macd_signal
                 and self.rsi < RSI_threshold_revert
             )
+
         else:
-        # if not hit profit pct, sell when MACD signal is unfavorable or hit loss pct (cut loss)
+            # Normal exit or stop loss
             sell_signal = (
                 sell_qty > 0
-                and (self.macd < self.macd_signal
-                or pl_pct <= LOSS_PCT)
+                and (
+                    self.macd < self.macd_signal
+                    or pl_pct <= LOSS_PCT
+                )
             )
-        if buy_signal:
-            action = "BUY"
+
+
+        # --------------------------------------------------
+        # Final decision
+        # --------------------------------------------------
+
+        # Prioritize exiting over entering
         if sell_signal:
             action = "SELL"
-            
+        elif buy_signal:
+            action = "BUY"
+
         return action, buy_qty, sell_qty
 
     def save_output(self, row, action, order_data=None):
