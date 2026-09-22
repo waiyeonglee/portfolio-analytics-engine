@@ -22,11 +22,64 @@ PROFIT_PCT = 1.5
 LOSS_PCT = -1.0
 
 # ============================================================
+# HELPERS / PORTFOLIO
+# ============================================================
+
+def round_down_to_lot(qty, lot_size):
+    if qty <= 0:
+        return 0
+    return (int(qty) // lot_size) * lot_size
+
+class Portfolio:
+    """Owns position/accounting state. All quantities are shares."""
+
+    def __init__(self):
+        self.position_qty = 0
+        self.total_cost = 0.0
+        self.cost_price = 0.0
+
+    @property
+    def position_open(self):
+        return self.position_qty > 0
+
+    def set_position(self, qty, cost_price):
+        self.position_qty = int(qty)
+        self.cost_price = float(cost_price) if self.position_qty > 0 else 0.0
+        self.total_cost = self.position_qty * self.cost_price
+
+    def buy(self, price, qty):
+        qty = int(qty)
+        if qty <= 0:
+            return
+        self.total_cost += float(price) * qty
+        self.position_qty += qty
+        self.cost_price = self.total_cost / self.position_qty
+
+    def sell(self, price, qty):
+        qty = min(int(qty), self.position_qty)
+        if qty <= 0:
+            return 0.0
+        realized_pl = (float(price) - self.cost_price) * qty
+        self.total_cost -= self.cost_price * qty
+        self.position_qty -= qty
+        if self.position_qty == 0:
+            self.total_cost = 0.0
+            self.cost_price = 0.0
+        return realized_pl
+
+    def unrealized_pl_pct(self, current_price):
+        if not self.position_open or self.cost_price <= 0:
+            return 0.0
+        return (float(current_price) - self.cost_price) / self.cost_price * 100
+
+
+# ============================================================
 # STRATEGY CLASS
 # ============================================================
 
 class MovingAverageStrategy:
-    def __init__(self):
+    def __init__(self, lot_size=1):
+        self.lot_size = int(lot_size)
         self.output = []
         self.prices = []
         self.prev_vwap = 0
@@ -34,6 +87,7 @@ class MovingAverageStrategy:
         self.cum_sum_pct = 0
         self.cum_turnover = 0
         self.cum_volume = 0
+        self.pending_order = False
 
     def update_state_from_row(self, row, init=False):
 
@@ -47,7 +101,7 @@ class MovingAverageStrategy:
         volume = row['volume']
 
         # Skip vwap computation during init
-        if init == False:
+        if not init:
             # Update vwap -> prev_vwap
             self.prev_vwap = self.vwap
             
@@ -123,7 +177,7 @@ class MovingAverageStrategy:
         buy_ratio = min(0.7, abs(trend_strength / 0.5))
 
         if self.max_cash_buy > 0:
-            buy_qty = int(self.max_cash_buy * buy_ratio)
+            buy_qty = round_down_to_lot(self.max_cash_buy * buy_ratio, self.lot_size)
         else:
             buy_qty = 0
 
@@ -135,10 +189,7 @@ class MovingAverageStrategy:
         sell_ratio = min(1.0, abs(pl_pct / LOSS_PCT))
 
         if self.max_position_sell > 0 and sell_ratio > 0:
-            sell_qty = max(
-                1,
-                int(self.max_position_sell * sell_ratio)
-            )
+            sell_qty = round_down_to_lot(self.max_position_sell * sell_ratio, self.lot_size)
         else:
             sell_qty = 0
 
@@ -199,6 +250,43 @@ class MovingAverageStrategy:
 
         return action, buy_qty, sell_qty
 
+    def apply_fill(self, action, price, qty, position_qty_after=None):
+        """Apply a completed BUY/SELL fill to strategy accounting in one place."""
+        qty = int(qty)
+        price = float(price)
+
+        self.trade_qty = qty
+        self.realized_pl_pct = self.compute_pl(price)
+
+        if action == "BUY":
+            self.total_price += price * qty
+
+            if position_qty_after is None:
+                position_qty_after = self.max_position_sell + qty
+
+            self.cost_price = (
+                self.total_price / position_qty_after
+                if position_qty_after > 0
+                else 0.0
+            )
+
+        elif action == "SELL":
+            self.total_price -= self.cost_price * qty
+
+            if position_qty_after == 0:
+                self.cost_price = 0.0
+
+        else:
+            raise ValueError(f"Unsupported fill action: {action}")
+
+        if position_qty_after is not None:
+            self.position_open = position_qty_after > 0
+
+    def reset_trade_state(self):
+        """Reset per-candle execution fields when no trade occurs."""
+        self.trade_qty = 0
+        self.realized_pl_pct = 0.0
+
     def save_output(self, row, action, order_data=None):
         candle_dict = {
             "code": row['code'],
@@ -228,8 +316,8 @@ class MovingAverageStrategy:
             "order_status": order_data['order_status'].iloc[0] if order_data is not None else None,
             "fee_amount": 0,
             "fee_details": 0,
-            "execution_time": "NA",
-            "execution_price": "NA",
+            "execution_time": pd.NaT,
+            "execution_price": np.nan,
             "Position": "OPEN" if self.position_open else "CLOSED",
             "unrealized_pl_pct": self.unrealized_pl_pct,
             "realized_pl_pct": self.realized_pl_pct,
@@ -238,9 +326,7 @@ class MovingAverageStrategy:
         }
 
         self.output.append(candle_dict)
-# ============================================================
-# MATCHING YOUR place_order FUNCTION
-# ============================================================
+
 def place_order(trade_ctx, price, symbol, qty, side, order_type):
     """Place a LIMIT/MARKET order"""
     ret, data = trade_ctx.place_order(
@@ -252,9 +338,10 @@ def place_order(trade_ctx, price, symbol, qty, side, order_type):
         trd_env=trade_env
     )
     if ret == RET_OK:
-        print(f"✅ Order executed: {side} {qty} {symbol}")
+        print(f"✅ Order submitted: {side} {qty} {symbol}")
     else:
-        print(f"❌ Order failed: {side} {symbol} | {data}")
+        print(f"❌ Order submission failed: {side} {symbol} | {data}")
+        return None
     return data
 
 def get_position_status(trade_ctx):
@@ -279,13 +366,29 @@ def get_available_qty(trade_ctx, current_price, lot_size):
         print("Error fetching trading info:", max_qty_to_trade)
         return 0
     
-    max_cash_buy = max_qty_to_trade['max_cash_buy'].iloc[0] // lot_size
-    max_position_sell = max_qty_to_trade['max_position_sell'].iloc[0] // lot_size
+    max_cash_buy = int(max_qty_to_trade['max_cash_buy'].iloc[0])
+    max_position_sell = int(max_qty_to_trade['max_position_sell'].iloc[0])
 
     return max_cash_buy, max_position_sell
 
+def get_trend_symbol(symbol):
+    """Return the benchmark used to determine broad market direction."""
+    if symbol.startswith("HK."):
+        return "HK.800000"
+    if symbol.startswith("US."):
+        return "US.SPY"
+    raise ValueError(f"Unsupported symbol: {symbol}")
+
+def get_market_config(symbol):
+    """Return Moomoo market enum and global-state key for a symbol."""
+    if symbol.startswith("HK."):
+        return TrdMarket.HK, "market_hk"
+    if symbol.startswith("US."):
+        return TrdMarket.US, "market_us"
+    raise ValueError(f"Unsupported symbol: {symbol}")
+
 def get_market_trend_live(quote_ctx):
-    trend_code = "HK.800000" if SYMBOL.startswith("HK.") else "US.SPY"
+    trend_code = get_trend_symbol(SYMBOL)
     ret, df_market = quote_ctx.get_market_snapshot([trend_code])
 
     if ret != RET_OK:
@@ -298,7 +401,7 @@ def get_market_trend_live(quote_ctx):
     )
 
 def get_market_trend_simulation(quote_ctx, last_day=None):
-    trend_code = "HK.800000" if SYMBOL.startswith("HK.") else "US.SPY"
+    trend_code = get_trend_symbol(SYMBOL)
     if last_day is None:
         raise ValueError("last_day must be provided in backtest mode.")
 
@@ -431,7 +534,7 @@ def compute_daily_pl(output_df, price):
             exposure += (row[price] * row['trade_qty'])
 
         elif row["action"] == "SELL":
-            exposure -= (row[price] * row['trade_qty'])
+            exposure -= (row['cost_price'] * row['trade_qty'])
 
         # track peak capital used
         peak_exposure = max(peak_exposure, exposure)
@@ -541,6 +644,73 @@ def get_daily_status(trade_ctx, realized_pl_sum, peak_exposure, realized_pl, log
              'calculated_realized_pl_ratio', 'calculated_realized_pl_sum', 'calculated_peak_exposure', 'calculated_pl_sum',
              'total_assets', 'asset_difference', 'asset_difference_ratio']]
     return df
+
+def run_backtest(strategy, df_current, df_market):
+    next_max_cash_buy = strategy.max_cash_buy
+    next_max_position_sell = strategy.max_position_sell
+
+    for _, row in df_current.iterrows():
+        current_price = row["close"]
+
+        # 1. Update indicators
+        strategy.update_state_from_row(row, init=False)
+
+        # 2. Update market trend
+        strategy.market_trend = get_backtest_market_trend(
+            df_market,
+            row["time_key"]
+        )
+
+        # 3. Update available quantities
+        strategy.max_cash_buy = next_max_cash_buy
+        strategy.max_position_sell = next_max_position_sell
+
+        if strategy.max_position_sell == 0:
+            strategy.cost_price = 0
+
+        # 4. Calculate current P/L
+        strategy.unrealized_pl_pct = strategy.compute_pl(current_price)
+
+        # 5. Generate signal
+        action, buy_qty, sell_qty = strategy.buy_or_sell(
+            strategy.unrealized_pl_pct
+        )
+
+        # 6. Simulate execution
+        if action == "BUY":
+            next_max_cash_buy -= buy_qty
+            next_max_position_sell += buy_qty
+
+            strategy.apply_fill(
+                action="BUY",
+                price=current_price,
+                qty=buy_qty,
+                position_qty_after=next_max_position_sell,
+            )
+
+        elif action == "SELL":
+            next_max_cash_buy += sell_qty
+            next_max_position_sell -= sell_qty
+
+            strategy.apply_fill(
+                action="SELL",
+                price=current_price,
+                qty=sell_qty,
+                position_qty_after=next_max_position_sell,
+            )
+
+        else:
+            strategy.reset_trade_state()
+
+        strategy.position_open = next_max_position_sell > 0
+
+        strategy.save_output(
+            row,
+            action,
+            order_data=None,
+        )
+
+    return pd.DataFrame(strategy.output)
 # ============================================================
 # QUOTE CALLBACK
 # ============================================================
@@ -593,23 +763,55 @@ class KlineHandler(CurKlineHandlerBase):
             self.strategy.unrealized_pl_pct = self.strategy.compute_pl(current_price)    
             
             # Decide action
-            action, buy_qty, sell_qty = self.strategy.buy_or_sell(self.strategy.unrealized_pl_pct)
-            BUY_QTY = self.lot_size * buy_qty
-            SELL_QTY = self.lot_size * sell_qty
-            # Execute action in live mode
-            if action == "BUY":
-                print("Max QTY to Buy:", self.strategy.max_cash_buy)
-                order_data = place_order(self.trade_ctx, self.strategy.prices[-1], SYMBOL, BUY_QTY, TrdSide.BUY, OrderType.MARKET)
-                self.strategy.trade_qty = BUY_QTY
-            elif action == "SELL":
-                print("Max QTY to Sell:", self.strategy.max_position_sell)
-                order_data = place_order(self.trade_ctx, self.strategy.prices[-1], SYMBOL, SELL_QTY, TrdSide.SELL, OrderType.MARKET)
-                self.strategy.trade_qty = SELL_QTY
+            action, buy_qty, sell_qty = self.strategy.buy_or_sell(
+                self.strategy.unrealized_pl_pct
+            )
+
+            # Skip trading if there is already a pending order
+            if self.strategy.pending_order:
+                print("Pending order, skipping this candle.")
+                action = "HOLD"
+
+            # Execute action
+            order_data = None
+            self.strategy.trade_qty = 0
+
+            if action in ("BUY", "SELL"):
+
+                if action == "BUY":
+                    qty = buy_qty
+                    side = TrdSide.BUY
+                    max_qty = self.strategy.max_cash_buy
+                else:
+                    qty = sell_qty
+                    side = TrdSide.SELL
+                    max_qty = self.strategy.max_position_sell
+
+                print(f"Max QTY to {action.title()}: {max_qty}")
+
+                order_data = place_order(
+                    self.trade_ctx,
+                    self.strategy.prices[-1],
+                    SYMBOL,
+                    qty,
+                    side,
+                    OrderType.MARKET
+                )
+
+                if order_data is not None:
+                    self.strategy.pending_order = True
+                    self.strategy.trade_qty = qty
+                else:
+                    action = "HOLD"
+
             else:
-                order_data = None
                 self.strategy.realized_pl_pct = 0
-                self.strategy.trade_qty = 0
-            self.strategy.save_output(candle_to_process, action, order_data)
+
+            self.strategy.save_output(
+                candle_to_process,
+                action,
+                order_data
+            )
         return RET_OK, data
 
 # ============================================================
@@ -743,14 +945,7 @@ class DealHandler(TradeDealHandlerBase):
 # ============================================================
 
 def start():
-    if SYMBOL.startswith("HK."):
-        trade_market = TrdMarket.HK
-        market = 'market_hk'
-    elif SYMBOL.startswith("US."):
-        trade_market = TrdMarket.US
-        market = 'market_us'
-
-    strategy = MovingAverageStrategy()
+    trade_market, market = get_market_config(SYMBOL)
 
     quote_ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
     trade_ctx = OpenSecTradeContext(
@@ -769,7 +964,8 @@ def start():
         stock_type=SecurityType.STOCK,
         code_list=SYMBOL
     )
-    lot_size = stock_data['lot_size'].iloc[0]
+    lot_size = int(stock_data['lot_size'].iloc[0])
+    strategy = MovingAverageStrategy(lot_size=lot_size)
 
     # df_current and last_day only used for backtesting, not live mode
     df_current, last_day = initialize_rows(strategy, trade_ctx, quote_ctx, lot_size)
@@ -798,69 +994,16 @@ def start():
             time.sleep(1)
     else:
         # simulation mode only, call historical data for market trend
-        df_market = get_market_trend_simulation(quote_ctx, last_day)
-        # simulation mode only, initialize next_max_cash_buy and next_max_position_sell to current values, since they will be updated in the loop
-        next_max_cash_buy = strategy.max_cash_buy
-        next_max_position_sell = strategy.max_position_sell
+        df_market = get_market_trend_simulation(
+            quote_ctx,
+            last_day
+        )
 
-        for _, row in df_current.iterrows():
-            # Update state
-            strategy.update_state_from_row(row, init=False)
-            current_price = strategy.prices[-1]
-            
-            # Get market trend
-            curr_time = row['time_key']
-            strategy.market_trend = df_market.loc[df_market['time_key'] == curr_time, 'close'].iloc[0] - df_market.loc[df_market['time_key'] == curr_time, 'last_close'].iloc[0]
-            
-            # Manual function for get_available_qty
-            strategy.max_cash_buy = next_max_cash_buy
-            strategy.max_position_sell = next_max_position_sell
-
-            # update cost price if max_position_sell is 0 (position closed)
-            if strategy.max_position_sell == 0:
-                strategy.cost_price = 0
-
-            # compute unrealized P/L before buy_or_sell decision
-            strategy.unrealized_pl_pct = strategy.compute_pl(current_price)
-            # Decide action
-            action, buy_qty, sell_qty = strategy.buy_or_sell(strategy.unrealized_pl_pct)
-            
-            # place_order + OrderHandler
-            if action == 'BUY':
-                next_max_cash_buy = strategy.max_cash_buy - buy_qty
-                next_max_position_sell = strategy.max_position_sell + buy_qty
-
-                strategy.trade_qty = buy_qty * lot_size
-                strategy.realized_pl_pct = strategy.compute_pl(current_price)
-
-                strategy.total_price += current_price * strategy.trade_qty
-                strategy.cost_price = strategy.total_price / next_max_position_sell
-                print(f"BUY | {strategy.trade_qty} {SYMBOL} | Cost: {strategy.cost_price:.2f}")
-            elif action == 'SELL':
-                next_max_cash_buy = strategy.max_cash_buy + sell_qty
-                next_max_position_sell = strategy.max_position_sell - sell_qty
-
-                strategy.trade_qty = sell_qty * lot_size
-                strategy.realized_pl_pct = strategy.compute_pl(current_price)
-
-                strategy.total_price -= strategy.cost_price * strategy.trade_qty
-                # cost price not updated
-                print(f"SELL | {strategy.trade_qty} {SYMBOL} | Cost: {strategy.cost_price:.2f} | Profit: {strategy.realized_pl_pct:.2f}")
-            elif action == 'HOLD':
-                next_max_cash_buy = strategy.max_cash_buy
-                next_max_position_sell = strategy.max_position_sell
-                strategy.trade_qty = 0
-                strategy.realized_pl_pct = 0
-                # total price, cost price remain the same
-
-            # Manual function to update position status, as in compute_pl (after order execution), done before current iteration
-            if next_max_position_sell > 0:
-                strategy.position_open = True
-            else:
-                strategy.position_open = False
-
-            print(f"Current time: {row['time_key']}, Current price:  {row['close']}, Unrealized P/L: {strategy.unrealized_pl_pct}")
-            strategy.save_output(row, action, order_data=None)
+        run_backtest(
+            strategy,
+            df_current,
+            df_market
+        )
 
     return strategy, quote_ctx, trade_ctx
 
@@ -905,6 +1048,7 @@ if __name__ == "__main__":
             daily_status_file_name = f"{mode}_{args.env}_daily_status.csv"
 
             logs_folder = os.path.join(os.getcwd(), 'logs')
+            os.makedirs(logs_folder, exist_ok=True)
             trading_logs_path = os.path.join(logs_folder, f"{pd.Timestamp.today().strftime('%Y-%m-%d %H_%M_%S')} - {trading_logs_file_name}")
             output_df.to_csv(trading_logs_path)
 
