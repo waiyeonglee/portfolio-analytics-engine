@@ -12,7 +12,7 @@ from moomoo import (
     TrdSide,
 )
 
-from broker import (
+from scripts.broker import (
     get_available_qty,
     get_market_config,
     get_market_trend_live,
@@ -492,7 +492,7 @@ def initialize_live(
         SubType,
     )
 
-    from strategy import WINDOW_LENGTH
+    from scripts.strategy import WINDOW_LENGTH
 
     api_date = config.timezone_date.strftime(
         "%Y-%m-%d"

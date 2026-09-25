@@ -14,7 +14,7 @@ from moomoo import (
     TrdMarket,
 )
 
-from config import pwd_unlock
+from scripts.config import pwd_unlock
 
 
 def get_trend_symbol(symbol):
