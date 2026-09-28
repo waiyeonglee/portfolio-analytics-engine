@@ -299,6 +299,8 @@ class OrderHandler(TradeOrderHandlerBase):
                     - self.strategy.trade_qty,
                 )
 
+            cost_price_before = self.strategy.cost_price
+
             self.strategy.apply_fill(
                 action=action,
                 price=current_price,
@@ -312,6 +314,7 @@ class OrderHandler(TradeOrderHandlerBase):
                 record,
                 data,
                 current_price,
+                cost_price_before
             )
 
             self.strategy.pending_order = False
@@ -325,9 +328,14 @@ class OrderHandler(TradeOrderHandlerBase):
         record,
         data,
         current_price,
-    ):
+        cost_price_before
+    ):  
+        action = data["trd_side"].iloc[0]
+
         record["cost_price"] = (
-            self.strategy.cost_price
+            cost_price_before
+            if action == "SELL"
+            else self.strategy.cost_price
         )
 
         record["total_price"] = (
@@ -351,8 +359,6 @@ class OrderHandler(TradeOrderHandlerBase):
             if self.strategy.position_open
             else "CLOSED"
         )
-
-        action = data["trd_side"].iloc[0]
 
         print(
             f"{self.config.symbol} "
