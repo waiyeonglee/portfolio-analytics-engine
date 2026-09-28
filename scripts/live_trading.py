@@ -498,7 +498,7 @@ def initialize_live(
         SubType,
     )
 
-    from scripts.strategy import WINDOW_LENGTH
+    from strategy import WINDOW_LENGTH
 
     api_date = config.timezone_date.strftime(
         "%Y-%m-%d"
