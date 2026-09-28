@@ -7,11 +7,11 @@ from moomoo import (
     SubType,
 )
 
-from scripts.broker import (
+from broker import (
     get_available_qty,
     get_market_trend_simulation,
 )
-from scripts.strategy import WINDOW_LENGTH
+from strategy import WINDOW_LENGTH
 
 
 def initialize_backtest(

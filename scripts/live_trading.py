@@ -12,7 +12,7 @@ from moomoo import (
     TrdSide,
 )
 
-from scripts.broker import (
+from broker import (
     get_available_qty,
     get_market_config,
     get_market_trend_live,

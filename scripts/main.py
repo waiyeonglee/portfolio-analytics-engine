@@ -2,15 +2,15 @@ import argparse
 
 import pandas as pd
 
-from scripts.backtest import run_backtest
-from scripts.broker import (
+from backtest import run_backtest
+from broker import (
     close_contexts,
     create_contexts,
 )
-from scripts.runtime import create_runtime
-from scripts.live_trading import run_live
-from scripts.reporting import save_results
-from scripts.strategy import MovingAverageStrategy
+from runtime import create_runtime
+from live_trading import run_live
+from reporting import save_results
+from strategy import MovingAverageStrategy
 
 
 def parse_args():
