@@ -156,7 +156,7 @@ def get_position_status(trade_ctx, config):
         return 0.0
 
     return float(
-        symbol_positions["cost_price"].iloc[0]
+        symbol_positions["average_cost"].iloc[0]
     )
 
 
