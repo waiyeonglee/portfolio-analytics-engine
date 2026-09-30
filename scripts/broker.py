@@ -155,9 +155,12 @@ def get_position_status(trade_ctx, config):
     if symbol_positions.empty:
         return 0.0
 
-    return float(
-        symbol_positions["average_cost"].iloc[0]
-    )
+    average_cost = symbol_positions["average_cost"].iloc[0]
+
+    if average_cost == "N/A":
+        return 0.0
+
+    return float(average_cost)
 
 
 def get_available_qty(
