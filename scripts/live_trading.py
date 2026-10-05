@@ -74,15 +74,9 @@ class KlineHandler(CurKlineHandlerBase):
 
         current_price = self.strategy.prices[-1]
 
-        market_trend = get_market_trend_live(
+        self.strategy.market_trend = get_market_trend_live(
             self.quote_ctx,
             self.config,
-        )
-
-        self.strategy.market_trend = (
-            market_trend
-            if market_trend is not None
-            else 0
         )
 
         (
@@ -93,9 +87,6 @@ class KlineHandler(CurKlineHandlerBase):
             self.config,
             current_price,
         )
-
-        if self.strategy.max_position_sell == 0:
-            self.strategy.cost_price = 0
 
         self.strategy.unrealized_pl_pct = (
             self.strategy.compute_pl(current_price)
@@ -336,31 +327,12 @@ class DealHandler(TradeDealHandlerBase):
 
             action = deal["trd_side"]
             fill_price = float(deal["price"])
-
-            # IMPORTANT:
-            # Use the quantity of THIS fill,
-            # not strategy.trade_qty.
             fill_qty = int(deal["qty"])
-
-            current_position = (
-                self.strategy.max_position_sell
-            )
-
-            if action == "BUY":
-                position_qty_after = (
-                    current_position + fill_qty
-                )
-            else:
-                position_qty_after = max(
-                    0,
-                    current_position - fill_qty,
-                )
 
             self.strategy.apply_fill(
                 action=action,
                 price=fill_price,
-                qty=fill_qty,
-                position_qty_after=position_qty_after,
+                qty=fill_qty
             )
 
             record["cost_price"] = (
