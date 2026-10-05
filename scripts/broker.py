@@ -229,40 +229,71 @@ def get_market_trend_live(
         - df_market.loc[0, "prev_close_price"]
     )
 
-
 def get_market_trend_simulation(
     quote_ctx,
     config,
-    last_day,
+    session_date,
 ):
     """Load historical benchmark candles."""
-
-    if last_day is None:
-        raise ValueError(
-            "last_day must be provided in backtest mode."
-        )
 
     trend_code = get_trend_symbol(
         config.symbol
     )
 
+    api_date = session_date.strftime(
+        "%Y-%m-%d"
+    )
+
     ret, df_market, _ = (
         quote_ctx.request_history_kline(
             trend_code,
-            last_day.strftime("%Y-%m-%d"),
-            last_day.strftime("%Y-%m-%d"),
+            api_date,
+            api_date,
             SubType.K_1M,
             AuType.NONE,
+            session=Session.ALL,
         )
     )
 
     if ret != RET_OK:
         raise RuntimeError(
-            f"Error fetching market trend: {df_market}"
+            f"Error fetching market trend: "
+            f"{df_market}"
         )
 
     df_market["time_key"] = pd.to_datetime(
         df_market["time_key"]
+    )
+
+    df_market = (
+        df_market
+        .sort_values("time_key")
+        .reset_index(drop=True)
+    )
+
+    # Use 09:30 benchmark candle as reference.
+    market_open_time = session_date.replace(
+        hour=9,
+        minute=30,
+    )
+
+    open_row = df_market.loc[
+        df_market["time_key"]
+        == market_open_time
+    ]
+
+    if open_row.empty:
+        raise RuntimeError(
+            "09:30 benchmark candle not available."
+        )
+
+    market_open_price = float(
+        open_row["open"].iloc[0]
+    )
+
+    df_market["market_trend"] = (
+        df_market["close"].astype(float)
+        - market_open_price
     )
 
     return df_market

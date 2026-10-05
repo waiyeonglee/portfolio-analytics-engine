@@ -67,40 +67,36 @@ class KlineHandler(CurKlineHandlerBase):
             f"Current price: {candle_to_process['close']}"
         )
 
-        self.strategy.update_state_from_row(
-            candle_to_process,
-            init=False,
+        candle_price = float(
+            candle_to_process["close"]
         )
 
-        current_price = self.strategy.prices[-1]
 
-        self.strategy.market_trend = get_market_trend_live(
+        market_trend = get_market_trend_live(
             self.quote_ctx,
             self.config,
         )
 
         (
-            self.strategy.max_cash_buy,
-            self.strategy.max_position_sell,
+            max_cash_buy,
+            max_position_sell,
         ) = get_available_qty(
             self.trade_ctx,
             self.config,
+            candle_price,
+        )
+
+        (
+            action,
+            buy_qty,
+            sell_qty,
             current_price,
+        ) = self.strategy.process_candle(
+            row=candle_to_process,
+            market_trend=market_trend,
+            max_cash_buy=max_cash_buy,
+            max_position_sell=max_position_sell,
         )
-
-        self.strategy.unrealized_pl_pct = (
-            self.strategy.compute_pl(current_price)
-        )
-
-        action, buy_qty, sell_qty = (
-            self.strategy.buy_or_sell(
-                self.strategy.unrealized_pl_pct
-            )
-        )
-
-        if self.strategy.pending_order:
-            print("Pending order, skipping this candle.")
-            action = "HOLD"
 
         order_data = None
         self.strategy.trade_qty = 0

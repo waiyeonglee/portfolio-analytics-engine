@@ -92,6 +92,62 @@ class MovingAverageStrategy:
     # STATE / INDICATORS
     # ========================================================
 
+    def process_candle(
+        self,
+        row,
+        market_trend,
+        max_cash_buy,
+        max_position_sell,
+    ):
+        """Process one completed candle and return a trade decision."""
+
+        self.update_state_from_row(
+            row,
+            init=False,
+        )
+
+        current_price = self.prices[-1]
+
+        self.market_trend = (
+            market_trend
+            if market_trend is not None
+            else 0.0
+        )
+
+        self.max_cash_buy = int(
+            max_cash_buy
+        )
+
+        self.max_position_sell = int(
+            max_position_sell
+        )
+
+        self.unrealized_pl_pct = (
+            self.compute_pl(
+                current_price
+            )
+        )
+
+        self.reset_trade_state()
+
+        (
+            action,
+            buy_qty,
+            sell_qty,
+        ) = self.buy_or_sell(
+            self.unrealized_pl_pct
+        )
+
+        if self.pending_order:
+            action = "HOLD"
+
+        return (
+            action,
+            buy_qty,
+            sell_qty,
+            current_price,
+        )
+
     def update_state_from_row(
         self,
         row,

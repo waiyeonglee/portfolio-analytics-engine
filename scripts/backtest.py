@@ -10,8 +10,13 @@ from moomoo import (
 from broker import (
     get_available_qty,
     get_market_trend_simulation,
+    get_position_status,
 )
-from strategy import WINDOW_LENGTH
+
+from strategy import (
+    WINDOW_LENGTH,
+    round_down_to_lot,
+)
 
 
 def initialize_backtest(
@@ -20,9 +25,13 @@ def initialize_backtest(
     quote_ctx,
     config,
 ):
-    """Load historical candles and initialize strategy state."""
+    """Load historical data and initialize backtest state."""
 
     timezone_date = config.timezone_date
+
+    # ---------------------------------------------------------
+    # Determine backtest session
+    # ---------------------------------------------------------
 
     if timezone_date.time() >= pd.Timestamp(
         "16:00"
@@ -30,12 +39,16 @@ def initialize_backtest(
         session_date = pd.Timestamp(
             timezone_date.date()
         )
-
     else:
         session_date = (
             pd.Timestamp(timezone_date.date())
             - pd.offsets.BDay(1)
         )
+
+    warmup_start = session_date.replace(
+        hour=8,
+        minute=30,
+    )
 
     session_start = session_date.replace(
         hour=9,
@@ -47,19 +60,19 @@ def initialize_backtest(
         minute=0,
     )
 
-    api_start = session_start.strftime(
+    api_date = session_date.strftime(
         "%Y-%m-%d"
     )
 
-    api_end = session_end.strftime(
-        "%Y-%m-%d"
-    )
+    # ---------------------------------------------------------
+    # Load symbol candles
+    # ---------------------------------------------------------
 
     ret, historical_df, _ = (
         quote_ctx.request_history_kline(
             config.symbol,
-            api_start,
-            api_end,
+            api_date,
+            api_date,
             SubType.K_1M,
             AuType.NONE,
             session=Session.ALL,
@@ -72,34 +85,48 @@ def initialize_backtest(
             f"{historical_df}"
         )
 
-    historical_df["time_key"] = pd.to_datetime(
-        historical_df["time_key"]
+    historical_df["time_key"] = (
+        pd.to_datetime(
+            historical_df["time_key"]
+        )
     )
 
-    pre_session_start = session_start.replace(
-        hour=9,
-        minute=0,
+    historical_df = (
+        historical_df
+        .sort_values("time_key")
+        .reset_index(drop=True)
     )
 
-    pre_session_end = session_start.replace(
-        hour=9,
-        minute=30,
-    )
+    # ---------------------------------------------------------
+    # Warm-up candles
+    # ---------------------------------------------------------
 
-    prev_session_df = historical_df.loc[
+    warmup_df = historical_df.loc[
         (
             historical_df["time_key"]
-            >= pre_session_start
+            >= warmup_start
         )
         & (
             historical_df["time_key"]
-            < pre_session_end
+            < session_start
         )
     ].copy()
 
-    df_past = prev_session_df.iloc[
-        -WINDOW_LENGTH + 1:
+    df_past = warmup_df.iloc[
+        -(WINDOW_LENGTH - 1):
     ].copy()
+
+    if len(df_past) < WINDOW_LENGTH - 1:
+        raise RuntimeError(
+            "Not enough historical candles to "
+            "initialize strategy. "
+            f"Need {WINDOW_LENGTH - 1}, "
+            f"got {len(df_past)}."
+        )
+
+    # ---------------------------------------------------------
+    # Actual backtest candles
+    # ---------------------------------------------------------
 
     df_current = historical_df.loc[
         (
@@ -112,53 +139,90 @@ def initialize_backtest(
         )
     ].copy()
 
-    if df_past.empty:
+    if df_current.empty:
         raise RuntimeError(
-            "Not enough historical candles "
-            "to initialize strategy."
+            "No regular-session candles "
+            "available for backtest."
         )
 
-    for i, (_, row) in enumerate(
-        df_past.iterrows()
-    ):
+    # ---------------------------------------------------------
+    # Initialize portfolio
+    # ---------------------------------------------------------
+
+    initial_price = float(
+        df_past["close"].iloc[-1]
+    )
+
+    max_cash_buy, _ = get_available_qty(
+        trade_ctx,
+        config,
+        initial_price,
+    )
+
+    (
+        strategy.position_qty,
+        strategy.cost_price,
+    ) = get_position_status(
+        trade_ctx,
+        config,
+    )
+
+    strategy.position_qty = int(
+        strategy.position_qty
+    )
+
+    strategy.cost_price = float(
+        strategy.cost_price
+    )
+
+    strategy.position_open = (
+        strategy.position_qty > 0
+    )
+
+    strategy.total_price = (
+        strategy.cost_price
+        * strategy.position_qty
+    )
+
+    # Convert broker buying capacity into simulated cash.
+    strategy.cash = (
+        float(max_cash_buy)
+        * initial_price
+    )
+
+    strategy.max_cash_buy = int(
+        max_cash_buy
+    )
+
+    strategy.max_position_sell = (
+        strategy.position_qty
+    )
+
+    # ---------------------------------------------------------
+    # Warm indicators
+    # ---------------------------------------------------------
+
+    for _, row in df_past.iterrows():
+
         strategy.update_state_from_row(
             row,
             init=True,
         )
 
-        current_price = strategy.prices[-1]
-
-        strategy.market_trend = 0
-
-        if i == 0:
-            (
-                max_cash_buy,
-                max_position_sell,
-            ) = get_available_qty(
-                trade_ctx,
-                config,
-                current_price,
-            )
-
-            # In simulation, treat existing position
-            # capacity as available starting capital.
-            strategy.max_cash_buy = (
-                max_cash_buy
-                + max_position_sell
-            )
-
-            strategy.max_position_sell = 0
-
-        strategy.cost_price = 0
-        strategy.unrealized_pl_pct = 0
-        strategy.position_open = False
-        strategy.trade_qty = 0
-        strategy.realized_pl_pct = 0
-
-        strategy.total_price = (
-            strategy.cost_price
-            * strategy.max_position_sell
+        current_price = float(
+            row["close"]
         )
+
+        strategy.market_trend = 0.0
+
+        strategy.unrealized_pl_pct = (
+            strategy.compute_pl(
+                current_price
+            )
+        )
+
+        strategy.trade_qty = 0
+        strategy.realized_pl_pct = 0.0
 
         strategy.save_output(
             row,
@@ -166,41 +230,54 @@ def initialize_backtest(
             order_data=None,
         )
 
+    # ---------------------------------------------------------
+    # Load benchmark data
+    # ---------------------------------------------------------
+
+    df_market = get_market_trend_simulation(
+        quote_ctx,
+        config,
+        session_date,
+    )
+
     print(
         "Initialized time:",
         df_past["time_key"].iloc[-1],
     )
 
-    return df_current, session_end
+    print(
+        "Initial simulated cash:",
+        strategy.cash,
+    )
 
+    print(
+        "Initial position:",
+        strategy.position_qty,
+    )
+
+    return (
+        df_current,
+        df_market,
+    )
 
 def execute_backtest(
     strategy,
     df_current,
     df_market,
-    config,
 ):
     """Run the candle-by-candle backtest."""
 
-    next_max_cash_buy = (
-        strategy.max_cash_buy
-    )
-
-    next_max_position_sell = (
-        strategy.max_position_sell
-    )
-
     for _, row in df_current.iterrows():
-        strategy.update_state_from_row(
-            row,
-            init=False,
-        )
 
-        current_price = float(
+        candle_price = float(
             row["close"]
         )
 
         curr_time = row["time_key"]
+
+        # -----------------------------------------------------
+        # Historical market trend
+        # -----------------------------------------------------
 
         market_row = df_market.loc[
             df_market["time_key"] == curr_time
@@ -213,98 +290,109 @@ def execute_backtest(
             )
             continue
 
-        strategy.market_trend = (
-            market_row["close"].iloc[0]
-            - market_row["open"].iloc[0]
+        market_trend = float(
+            market_row[
+                "market_trend"
+            ].iloc[0]
         )
 
-        strategy.max_cash_buy = (
-            next_max_cash_buy
-        )
+        # -----------------------------------------------------
+        # Simulated account capacity
+        # -----------------------------------------------------
 
-        strategy.max_position_sell = (
-            next_max_position_sell
-        )
-
-        if strategy.max_position_sell == 0:
-            strategy.cost_price = 0
-
-        strategy.unrealized_pl_pct = (
-            strategy.compute_pl(
-                current_price
+        max_cash_buy = (
+            round_down_to_lot(
+                strategy.cash
+                / candle_price,
+                strategy.lot_size,
             )
         )
+
+        max_position_sell = (
+            strategy.position_qty
+        )
+
+        # -----------------------------------------------------
+        # Shared live/backtest strategy pipeline
+        # -----------------------------------------------------
 
         (
             action,
             buy_qty,
             sell_qty,
-        ) = strategy.buy_or_sell(
-            strategy.unrealized_pl_pct
+            current_price,
+        ) = strategy.process_candle(
+            row=row,
+            market_trend=market_trend,
+            max_cash_buy=max_cash_buy,
+            max_position_sell=max_position_sell,
         )
+
+        # -----------------------------------------------------
+        # Simulated BUY
+        # -----------------------------------------------------
 
         if action == "BUY":
-            next_max_cash_buy -= buy_qty
-            next_max_position_sell += buy_qty
 
-            strategy.apply_fill(
-                action="BUY",
-                price=current_price,
-                qty=buy_qty,
-                position_qty_after=(
-                    next_max_position_sell
-                ),
+            trade_value = (
+                current_price
+                * buy_qty
             )
 
-            print(
-                f"BUY | {strategy.trade_qty} "
-                f"{config.symbol} "
-                f"| Cost: "
-                f"{strategy.cost_price:.2f}"
-            )
+            if (
+                buy_qty > 0
+                and trade_value
+                <= strategy.cash
+            ):
+                strategy.cash -= (
+                    trade_value
+                )
+
+                strategy.apply_fill(
+                    action="BUY",
+                    price=current_price,
+                    qty=buy_qty,
+                )
+
+            else:
+                action = "HOLD"
+                strategy.reset_trade_state()
+
+        # -----------------------------------------------------
+        # Simulated SELL
+        # -----------------------------------------------------
 
         elif action == "SELL":
-            next_max_cash_buy += sell_qty
-            next_max_position_sell -= sell_qty
 
-            strategy.apply_fill(
-                action="SELL",
-                price=current_price,
-                qty=sell_qty,
-                position_qty_after=(
-                    next_max_position_sell
-                ),
-            )
+            if (
+                sell_qty > 0
+                and sell_qty
+                <= strategy.position_qty
+            ):
+                strategy.cash += (
+                    current_price
+                    * sell_qty
+                )
 
-            print(
-                f"SELL | {strategy.trade_qty} "
-                f"{config.symbol} "
-                f"| Cost: "
-                f"{strategy.cost_price:.2f} "
-                f"| Profit: "
-                f"{strategy.realized_pl_pct:.2f}"
-            )
+                strategy.apply_fill(
+                    action="SELL",
+                    price=current_price,
+                    qty=sell_qty,
+                )
 
-        else:
-            strategy.reset_trade_state()
+            else:
+                action = "HOLD"
+                strategy.reset_trade_state()
 
-        strategy.position_open = (
-            next_max_position_sell > 0
-        )
-
-        print(
-            f"Current time: {row['time_key']}, "
-            f"Current price: {current_price}, "
-            f"Unrealized P/L: "
-            f"{strategy.unrealized_pl_pct}"
-        )
+        # -----------------------------------------------------
+        # Save
+        # -----------------------------------------------------
 
         strategy.save_output(
             row,
             action,
             order_data=None,
         )
-
 
 def run_backtest(
     strategy,
@@ -314,22 +402,18 @@ def run_backtest(
 ):
     """Prepare and run a complete backtest."""
 
-    df_current, last_day = initialize_backtest(
+    (
+        df_current,
+        df_market,
+    ) = initialize_backtest(
         strategy,
         trade_ctx,
         quote_ctx,
         config,
     )
 
-    df_market = get_market_trend_simulation(
-        quote_ctx,
-        config,
-        last_day,
-    )
-
     execute_backtest(
         strategy,
         df_current,
         df_market,
-        config,
     )
