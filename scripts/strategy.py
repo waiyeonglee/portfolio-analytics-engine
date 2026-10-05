@@ -74,6 +74,7 @@ class MovingAverageStrategy:
 
         # Position
         self.position_open = False
+        self.position_qty = 0
         self.cost_price = 0.0
         self.total_price = 0.0
 
@@ -272,7 +273,12 @@ class MovingAverageStrategy:
         self,
         pl_pct,
     ):
-        if self.max_position_sell <= 0:
+        available_to_sell = min(
+            self.position_qty,
+            self.max_position_sell,
+        )
+
+        if available_to_sell <= 0:
             return 0
 
         sell_ratio = min(
@@ -281,7 +287,7 @@ class MovingAverageStrategy:
         )
 
         return round_down_to_lot(
-            self.max_position_sell * sell_ratio,
+            available_to_sell * sell_ratio,
             self.lot_size,
         )
 
@@ -358,38 +364,52 @@ class MovingAverageStrategy:
         action,
         price,
         qty,
-        position_qty_after,
     ):
-        """Update accounting after a completed fill."""
+        """Update position/accounting after a completed fill."""
 
         price = float(price)
         qty = int(qty)
-        position_qty_after = int(position_qty_after)
 
         if qty <= 0:
             return
 
         self.trade_qty = qty
 
-        # Must calculate before changing
-        # the cost basis.
-        self.realized_pl_pct = self.compute_pl(price)
-
         if action == "BUY":
-            self.total_price += price * qty
+            self.realized_pl_pct = 0.0
+            self.total_price += (
+                price * qty
+            )
 
-            if position_qty_after > 0:
+            self.position_qty += qty
+
+            if self.position_qty > 0:
                 self.cost_price = (
                     self.total_price
-                    / position_qty_after
+                    / self.position_qty
                 )
 
         elif action == "SELL":
+            
+        # Calculate before changing cost basis.
+            self.realized_pl_pct = self.compute_pl(
+                price
+            )
+            
+            if qty > self.position_qty:
+                raise RuntimeError(
+                    f"Position mismatch: "
+                    f"SELL qty={qty}, "
+                    f"position_qty={self.position_qty}"
+                )
+
             self.total_price -= (
                 self.cost_price * qty
             )
 
-            if position_qty_after == 0:
+            self.position_qty -= qty
+
+            if self.position_qty == 0:
                 self.total_price = 0.0
                 self.cost_price = 0.0
 
@@ -399,11 +419,7 @@ class MovingAverageStrategy:
             )
 
         self.position_open = (
-            position_qty_after > 0
-        )
-
-        self.max_position_sell = (
-            position_qty_after
+            self.position_qty > 0
         )
 
     def reset_trade_state(self):
@@ -479,6 +495,7 @@ class MovingAverageStrategy:
                 if self.position_open
                 else "CLOSED"
             ),
+            "Position Qty": self.position_qty,
             "cost_price": self.cost_price,
             "total_price": self.total_price,
 

@@ -135,7 +135,7 @@ def place_order(
 
 
 def get_position_status(trade_ctx, config):
-    """Return current cost price for the configured symbol."""
+    """Return current position quantity and cost price for the configured symbol."""
 
     ret, positions = trade_ctx.position_list_query(
         trd_env=config.trade_env
@@ -146,21 +146,29 @@ def get_position_status(trade_ctx, config):
             "Error fetching positions:",
             positions,
         )
-        return 0.0
+        return 0.0, 0.0
 
     symbol_positions = positions.loc[
         positions["code"] == config.symbol
     ]
 
     if symbol_positions.empty:
-        return 0.0
+        return 0.0, 0.0
 
-    average_cost = symbol_positions["average_cost"].iloc[0]
+    position_qty = int(
+        symbol_positions["qty"].iloc[0]
+    )
+
+    average_cost = (
+        symbol_positions["average_cost"].iloc[0]
+    )
 
     if average_cost == "N/A":
-        return 0.0
+        average_cost = 0.0
+    else:
+        average_cost = float(average_cost)
 
-    return float(average_cost)
+    return position_qty, average_cost
 
 
 def get_available_qty(

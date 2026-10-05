@@ -141,7 +141,6 @@ class KlineHandler(CurKlineHandlerBase):
 
             if order_data is not None:
                 self.strategy.pending_order = True
-                self.strategy.trade_qty = qty
 
             else:
                 action = "HOLD"
@@ -184,6 +183,15 @@ class OrderHandler(TradeOrderHandlerBase):
         order_id = data["order_id"].iloc[0]
         order_status = data["order_status"].iloc[0]
 
+        terminal_statuses = {
+            "FILLED_ALL",
+            "CANCELLED_ALL",
+            "FAILED",
+        }
+
+        if order_status in terminal_statuses:
+            self.strategy.pending_order = False
+
         if order_status != "FILLED_ALL":
             return (RET_OK, data)
 
@@ -225,22 +233,9 @@ class OrderHandler(TradeOrderHandlerBase):
                 data["dealt_avg_price"].iloc[0]
             )
 
-            current_position = (
-                self.strategy.max_position_sell
+            filled_qty = int(
+                data["dealt_qty"].iloc[0]
             )
-
-            if action == "BUY":
-                position_qty_after = (
-                    current_position
-                    + self.strategy.trade_qty
-                )
-
-            else:
-                position_qty_after = max(
-                    0,
-                    current_position
-                    - self.strategy.trade_qty,
-                )
 
             cost_price_before = (
                 self.strategy.cost_price
@@ -249,8 +244,7 @@ class OrderHandler(TradeOrderHandlerBase):
             self.strategy.apply_fill(
                 action=action,
                 price=current_price,
-                qty=self.strategy.trade_qty,
-                position_qty_after=position_qty_after,
+                qty=filled_qty,
             )
 
             self._update_record(
@@ -324,20 +318,29 @@ class DealHandler(TradeDealHandlerBase):
             print("❌ Deal callback error:", data)
             return (RET_ERROR, data)
 
-        print("Deal callback received!")
+        # A callback can contain more than one deal.
+        for _, deal in data.iterrows():
 
-        order_id = data["order_id"].iloc[0]
+            order_id = deal["order_id"]
 
-        for record in self.strategy.output:
+            record = next(
+                (
+                    r for r in self.strategy.output
+                    if r["order_id"] == order_id
+                ),
+                None,
+            )
 
-            if record["order_id"] != order_id:
+            if record is None:
                 continue
 
-            action = data["trd_side"].iloc[0]
+            action = deal["trd_side"]
+            fill_price = float(deal["price"])
 
-            current_price = float(
-                data["price"].iloc[0]
-            )
+            # IMPORTANT:
+            # Use the quantity of THIS fill,
+            # not strategy.trade_qty.
+            fill_qty = int(deal["qty"])
 
             current_position = (
                 self.strategy.max_position_sell
@@ -345,21 +348,18 @@ class DealHandler(TradeDealHandlerBase):
 
             if action == "BUY":
                 position_qty_after = (
-                    current_position
-                    + self.strategy.trade_qty
+                    current_position + fill_qty
                 )
-
             else:
                 position_qty_after = max(
                     0,
-                    current_position
-                    - self.strategy.trade_qty,
+                    current_position - fill_qty,
                 )
 
             self.strategy.apply_fill(
                 action=action,
-                price=current_price,
-                qty=self.strategy.trade_qty,
+                price=fill_price,
+                qty=fill_qty,
                 position_qty_after=position_qty_after,
             )
 
@@ -372,12 +372,10 @@ class DealHandler(TradeDealHandlerBase):
             )
 
             record["execution_time"] = (
-                data["create_time"].iloc[0]
+                deal["create_time"]
             )
 
-            record["execution_price"] = (
-                current_price
-            )
+            record["execution_price"] = fill_price
 
             record["realized_pl_pct"] = (
                 self.strategy.realized_pl_pct
@@ -389,19 +387,25 @@ class DealHandler(TradeDealHandlerBase):
                 else "CLOSED"
             )
 
-            self.strategy.pending_order = False
+            # Accumulate actual filled quantity.
+            previous_filled = record.get(
+                "filled_qty",
+                0,
+            )
+
+            record["filled_qty"] = (
+                previous_filled + fill_qty
+            )
 
             print(
                 f"{self.config.symbol} | "
-                f"Price: {current_price:.2f} | "
+                f"Fill: {fill_qty} | "
+                f"Price: {fill_price:.2f} | "
                 f"Action: {action} | "
-                f"Time: {record['execution_time']}"
+                f"Filled: {record['filled_qty']}"
             )
 
-            break
-
         return (RET_OK, data)
-
 
 def initialize_live(
     strategy,
@@ -461,6 +465,7 @@ def initialize_live(
         strategy.market_trend = 0
 
         if i == 0:
+
             (
                 strategy.max_cash_buy,
                 strategy.max_position_sell,
@@ -470,11 +475,21 @@ def initialize_live(
                 current_price,
             )
 
-            strategy.cost_price = (
-                get_position_status(
-                    trade_ctx,
-                    config,
-                )
+            (
+                strategy.position_qty,
+                strategy.cost_price,
+            ) = get_position_status(
+                trade_ctx,
+                config,
+            )
+
+            strategy.position_open = (
+                strategy.position_qty > 0
+            )
+
+            strategy.total_price = (
+                strategy.cost_price
+                * strategy.position_qty
             )
 
         strategy.unrealized_pl_pct = (
@@ -483,15 +498,6 @@ def initialize_live(
 
         strategy.trade_qty = 0
         strategy.realized_pl_pct = 0
-
-        strategy.position_open = (
-            strategy.max_position_sell > 0
-        )
-
-        strategy.total_price = (
-            strategy.cost_price
-            * strategy.max_position_sell
-        )
 
         strategy.save_output(
             row,
