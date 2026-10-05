@@ -3,22 +3,16 @@ import argparse
 import pandas as pd
 
 from backtest import run_backtest
-from broker import (
-    close_contexts,
-    create_contexts,
-)
-from runtime import create_runtime
+from broker import close_contexts, create_contexts
 from live_trading import run_live
 from reporting import save_results
+from runtime import create_runtime
 from strategy import MovingAverageStrategy
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description=(
-            "Run the trading bot in "
-            "live or backtest mode."
-        )
+        description="Run the trading bot in live or backtest mode."
     )
 
     parser.add_argument(
@@ -35,10 +29,7 @@ def parse_args():
 
     parser.add_argument(
         "--env",
-        choices=[
-            "real",
-            "simulate",
-        ],
+        choices=["real", "simulate"],
         default="simulate",
         help="Trading environment.",
     )
@@ -55,11 +46,7 @@ def main():
     strategy = None
 
     try:
-        (
-            quote_ctx,
-            trade_ctx,
-            lot_size,
-        ) = create_contexts(config)
+        quote_ctx, trade_ctx, lot_size = create_contexts(config)
 
         strategy = MovingAverageStrategy(
             lot_size=lot_size
@@ -72,7 +59,6 @@ def main():
                 trade_ctx,
                 config,
             )
-
         else:
             run_backtest(
                 strategy,

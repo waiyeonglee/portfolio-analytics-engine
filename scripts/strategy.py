@@ -34,9 +34,7 @@ def round_down_to_lot(qty, lot_size):
     if qty <= 0:
         return 0
 
-    return (
-        int(qty) // lot_size
-    ) * lot_size
+    return (int(qty) // lot_size) * lot_size
 
 
 # ============================================================
@@ -100,9 +98,7 @@ class MovingAverageStrategy:
     ):
         """Update indicators using the latest candle."""
 
-        current_price = float(
-            row["close"]
-        )
+        current_price = float(row["close"])
 
         previous_price = (
             self.prices[-1]
@@ -110,9 +106,7 @@ class MovingAverageStrategy:
             else None
         )
 
-        self.prices.append(
-            current_price
-        )
+        self.prices.append(current_price)
 
         self._update_price_change(
             current_price,
@@ -125,12 +119,8 @@ class MovingAverageStrategy:
 
         if not init:
             self._update_vwap(
-                turnover=float(
-                    row["turnover"]
-                ),
-                volume=float(
-                    row["volume"]
-                ),
+                turnover=float(row["turnover"]),
+                volume=float(row["volume"]),
             )
 
     def _update_price_change(
@@ -138,73 +128,45 @@ class MovingAverageStrategy:
         current_price,
         previous_price,
     ):
-        if (
-            previous_price is None
-            or previous_price == 0
-        ):
+        if previous_price is None or previous_price == 0:
             self.pct_diff = 0.0
-
         else:
             self.pct_diff = (
-                (
-                    current_price
-                    - previous_price
-                )
+                (current_price - previous_price)
                 / previous_price
                 * 100
             )
 
-        self.cum_sum_pct += (
-            self.pct_diff
-        )
+        self.cum_sum_pct += self.pct_diff
 
     def _update_moving_averages(self):
-        if (
-            len(self.prices)
-            >= SHORT_WINDOW
-        ):
+        if len(self.prices) >= SHORT_WINDOW:
             self.short_sma = float(
                 np.mean(
-                    self.prices[
-                        -SHORT_WINDOW:
-                    ]
+                    self.prices[-SHORT_WINDOW:]
                 )
             )
-
         else:
             self.short_sma = 0.0
 
-        if (
-            len(self.prices)
-            >= LONG_WINDOW
-        ):
+        if len(self.prices) >= LONG_WINDOW:
             self.long_sma = float(
                 np.mean(
-                    self.prices[
-                        -LONG_WINDOW:
-                    ]
+                    self.prices[-LONG_WINDOW:]
                 )
             )
-
         else:
             self.long_sma = 0.0
 
     def _update_rsi(self):
-        required_prices = (
-            RSI_PERIOD + 1
-        )
+        required_prices = RSI_PERIOD + 1
 
-        if (
-            len(self.prices)
-            < required_prices
-        ):
+        if len(self.prices) < required_prices:
             self.rsi = 0.0
             return
 
         prices = np.asarray(
-            self.prices[
-                -required_prices:
-            ],
+            self.prices[-required_prices:],
             dtype=float,
         )
 
@@ -213,9 +175,7 @@ class MovingAverageStrategy:
             timeperiod=RSI_PERIOD,
         )
 
-        self.rsi = float(
-            rsi[-1]
-        )
+        self.rsi = float(rsi[-1])
 
     def _update_macd(self):
         required_prices = (
@@ -224,19 +184,14 @@ class MovingAverageStrategy:
             + 1
         )
 
-        if (
-            len(self.prices)
-            < required_prices
-        ):
+        if len(self.prices) < required_prices:
             self.macd = 0.0
             self.macd_signal = 0.0
             self.macd_histogram = 0.0
             return
 
         prices = np.asarray(
-            self.prices[
-                -required_prices:
-            ],
+            self.prices[-required_prices:],
             dtype=float,
         )
 
@@ -251,17 +206,9 @@ class MovingAverageStrategy:
             signalperiod=MACD_SIGNAL,
         )
 
-        self.macd = float(
-            macd[-1]
-        )
-
-        self.macd_signal = float(
-            signal[-1]
-        )
-
-        self.macd_histogram = float(
-            histogram[-1]
-        )
+        self.macd = float(macd[-1])
+        self.macd_signal = float(signal[-1])
+        self.macd_histogram = float(histogram[-1])
 
     def _update_vwap(
         self,
@@ -293,10 +240,7 @@ class MovingAverageStrategy:
             return 0.0
 
         return (
-            (
-                float(current_price)
-                - self.cost_price
-            )
+            (float(current_price) - self.cost_price)
             / self.cost_price
             * 100
         )
@@ -316,14 +260,11 @@ class MovingAverageStrategy:
 
         buy_ratio = min(
             0.7,
-            abs(
-                trend_strength / 0.5
-            ),
+            abs(trend_strength / 0.5),
         )
 
         return round_down_to_lot(
-            self.max_cash_buy
-            * buy_ratio,
+            self.max_cash_buy * buy_ratio,
             self.lot_size,
         )
 
@@ -331,22 +272,16 @@ class MovingAverageStrategy:
         self,
         pl_pct,
     ):
-        if (
-            self.max_position_sell
-            <= 0
-        ):
+        if self.max_position_sell <= 0:
             return 0
 
         sell_ratio = min(
             1.0,
-            abs(
-                pl_pct / LOSS_PCT
-            ),
+            abs(pl_pct / LOSS_PCT),
         )
 
         return round_down_to_lot(
-            self.max_position_sell
-            * sell_ratio,
+            self.max_position_sell * sell_ratio,
             self.lot_size,
         )
 
@@ -358,15 +293,8 @@ class MovingAverageStrategy:
         self,
         pl_pct=0.0,
     ):
-        buy_qty = (
-            self._calculate_buy_qty()
-        )
-
-        sell_qty = (
-            self._calculate_sell_qty(
-                pl_pct
-            )
-        )
+        buy_qty = self._calculate_buy_qty()
+        sell_qty = self._calculate_sell_qty(pl_pct)
 
         trend_strength = (
             self.macd
@@ -377,35 +305,27 @@ class MovingAverageStrategy:
             buy_signal = (
                 buy_qty > 0
                 and trend_strength > 0
-                and self.rsi
-                > RSI_THRESHOLD_FOLLOW
+                and self.rsi > RSI_THRESHOLD_FOLLOW
             )
-
         else:
             buy_signal = (
                 buy_qty > 0
                 and trend_strength < 0
-                and self.rsi
-                < RSI_THRESHOLD_REVERT
+                and self.rsi < RSI_THRESHOLD_REVERT
             )
 
         if pl_pct >= PROFIT_PCT:
             sell_signal = (
                 sell_qty > 0
-                and self.macd
-                < self.macd_signal
-                and self.rsi
-                < RSI_THRESHOLD_REVERT
+                and self.macd < self.macd_signal
+                and self.rsi < RSI_THRESHOLD_REVERT
             )
-
         else:
             sell_signal = (
                 sell_qty > 0
                 and (
-                    self.macd
-                    < self.macd_signal
-                    or pl_pct
-                    <= LOSS_PCT
+                    self.macd < self.macd_signal
+                    or pl_pct <= LOSS_PCT
                 )
             )
 
@@ -444,10 +364,7 @@ class MovingAverageStrategy:
 
         price = float(price)
         qty = int(qty)
-
-        position_qty_after = int(
-            position_qty_after
-        )
+        position_qty_after = int(position_qty_after)
 
         if qty <= 0:
             return
@@ -456,14 +373,10 @@ class MovingAverageStrategy:
 
         # Must calculate before changing
         # the cost basis.
-        self.realized_pl_pct = (
-            self.compute_pl(price)
-        )
+        self.realized_pl_pct = self.compute_pl(price)
 
         if action == "BUY":
-            self.total_price += (
-                price * qty
-            )
+            self.total_price += price * qty
 
             if position_qty_after > 0:
                 self.cost_price = (
@@ -473,8 +386,7 @@ class MovingAverageStrategy:
 
         elif action == "SELL":
             self.total_price -= (
-                self.cost_price
-                * qty
+                self.cost_price * qty
             )
 
             if position_qty_after == 0:
@@ -483,8 +395,7 @@ class MovingAverageStrategy:
 
         else:
             raise ValueError(
-                f"Unsupported action: "
-                f"{action}"
+                f"Unsupported action: {action}"
             )
 
         self.position_open = (
@@ -517,25 +428,19 @@ class MovingAverageStrategy:
         if order_data is not None:
 
             if (
-                "order_id"
-                in order_data.columns
+                "order_id" in order_data.columns
                 and not order_data.empty
             ):
                 order_id = (
-                    order_data[
-                        "order_id"
-                    ].iloc[0]
+                    order_data["order_id"].iloc[0]
                 )
 
             if (
-                "order_status"
-                in order_data.columns
+                "order_status" in order_data.columns
                 and not order_data.empty
             ):
                 order_status = (
-                    order_data[
-                        "order_status"
-                    ].iloc[0]
+                    order_data["order_status"].iloc[0]
                 )
 
         candle = {
@@ -547,9 +452,7 @@ class MovingAverageStrategy:
 
             # Price statistics
             "pct_diff": self.pct_diff,
-            "cum_sum_pct": (
-                self.cum_sum_pct
-            ),
+            "cum_sum_pct": self.cum_sum_pct,
 
             # Moving averages
             "short_sma": self.short_sma,
@@ -560,21 +463,15 @@ class MovingAverageStrategy:
 
             # MACD
             "MACD": self.macd,
-            "MACD Signal": (
-                self.macd_signal
-            ),
-            "MACD Histogram": (
-                self.macd_histogram
-            ),
+            "MACD Signal": self.macd_signal,
+            "MACD Histogram": self.macd_histogram,
             "MACD_up": (
                 self.macd
                 > self.macd_signal
             ),
 
             # Market
-            "market_trend": (
-                self.market_trend
-            ),
+            "market_trend": self.market_trend,
 
             # Position
             "Position": (
@@ -582,26 +479,18 @@ class MovingAverageStrategy:
                 if self.position_open
                 else "CLOSED"
             ),
-            "cost_price": (
-                self.cost_price
-            ),
-            "total_price": (
-                self.total_price
-            ),
+            "cost_price": self.cost_price,
+            "total_price": self.total_price,
 
             # Capacity
-            "max_cash_buy": (
-                self.max_cash_buy
-            ),
+            "max_cash_buy": self.max_cash_buy,
             "max_position_sell": (
                 self.max_position_sell
             ),
 
             # Trade
             "action": action,
-            "trade_qty": (
-                self.trade_qty
-            ),
+            "trade_qty": self.trade_qty,
 
             # P/L
             "unrealized_pl_pct": (
@@ -615,7 +504,6 @@ class MovingAverageStrategy:
                 self.unrealized_pl_pct
                 >= PROFIT_PCT
             ),
-
             "hit_loss": (
                 self.unrealized_pl_pct
                 <= LOSS_PCT
@@ -623,9 +511,7 @@ class MovingAverageStrategy:
 
             # Order
             "order_id": order_id,
-            "order_status": (
-                order_status
-            ),
+            "order_status": order_status,
 
             # Execution
             "execution_time": pd.NaT,
@@ -636,6 +522,4 @@ class MovingAverageStrategy:
             "fee_details": None,
         }
 
-        self.output.append(
-            candle
-        )
+        self.output.append(candle)

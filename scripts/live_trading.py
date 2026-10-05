@@ -3,8 +3,10 @@ import time
 from moomoo import (
     RET_ERROR,
     RET_OK,
+    AuType,
     CurKlineHandlerBase,
     OrderType,
+    Session,
     SubType,
     TradeDealHandlerBase,
     TradeOrderHandlerBase,
@@ -20,33 +22,26 @@ from broker import (
     place_order,
 )
 
+from strategy import WINDOW_LENGTH
+
 
 class KlineHandler(CurKlineHandlerBase):
 
-    def __init__(
-        self,
-        strategy,
-        quote_ctx,
-        trade_ctx,
-        config,
-    ):
+    def __init__(self, strategy, quote_ctx, trade_ctx, config):
         super().__init__()
 
         self.strategy = strategy
         self.quote_ctx = quote_ctx
         self.trade_ctx = trade_ctx
         self.config = config
-
         self.prev_candle = None
 
     def on_recv_rsp(self, rsp_pb):
-        ret, data = super().on_recv_rsp(
-            rsp_pb
-        )
+        ret, data = super().on_recv_rsp(rsp_pb)
 
         if ret != RET_OK:
             print("Kline error:", data)
-            return RET_ERROR, data
+            return (RET_ERROR, data)
 
         current_candle = data.iloc[-1]
 
@@ -59,22 +54,17 @@ class KlineHandler(CurKlineHandlerBase):
                 order_data=None,
             )
 
-            return RET_OK, data
+            return (RET_OK, data)
 
-        if (
-            current_candle["time_key"]
-            == self.prev_candle["time_key"]
-        ):
-            return RET_OK, data
+        if current_candle["time_key"] == self.prev_candle["time_key"]:
+            return (RET_OK, data)
 
         candle_to_process = self.prev_candle
         self.prev_candle = current_candle
 
         print(
-            f"Current time: "
-            f"{candle_to_process['time_key']}, "
-            f"Current price: "
-            f"{candle_to_process['close']}"
+            f"Current time: {candle_to_process['time_key']}, "
+            f"Current price: {candle_to_process['close']}"
         )
 
         self.strategy.update_state_from_row(
@@ -82,9 +72,7 @@ class KlineHandler(CurKlineHandlerBase):
             init=False,
         )
 
-        current_price = (
-            self.strategy.prices[-1]
-        )
+        current_price = self.strategy.prices[-1]
 
         market_trend = get_market_trend_live(
             self.quote_ctx,
@@ -106,31 +94,21 @@ class KlineHandler(CurKlineHandlerBase):
             current_price,
         )
 
-        if (
-            self.strategy.max_position_sell
-            == 0
-        ):
+        if self.strategy.max_position_sell == 0:
             self.strategy.cost_price = 0
 
         self.strategy.unrealized_pl_pct = (
-            self.strategy.compute_pl(
-                current_price
-            )
+            self.strategy.compute_pl(current_price)
         )
 
-        (
-            action,
-            buy_qty,
-            sell_qty,
-        ) = self.strategy.buy_or_sell(
-            self.strategy.unrealized_pl_pct
+        action, buy_qty, sell_qty = (
+            self.strategy.buy_or_sell(
+                self.strategy.unrealized_pl_pct
+            )
         )
 
         if self.strategy.pending_order:
-            print(
-                "Pending order, "
-                "skipping this candle."
-            )
+            print("Pending order, skipping this candle.")
             action = "HOLD"
 
         order_data = None
@@ -141,21 +119,15 @@ class KlineHandler(CurKlineHandlerBase):
             if action == "BUY":
                 qty = buy_qty
                 side = TrdSide.BUY
-                max_qty = (
-                    self.strategy.max_cash_buy
-                )
+                max_qty = self.strategy.max_cash_buy
 
             else:
                 qty = sell_qty
                 side = TrdSide.SELL
-                max_qty = (
-                    self.strategy
-                    .max_position_sell
-                )
+                max_qty = self.strategy.max_position_sell
 
             print(
-                f"Max QTY to "
-                f"{action.title()}: {max_qty}"
+                f"Max QTY to {action.title()}: {max_qty}"
             )
 
             order_data = place_order(
@@ -183,17 +155,12 @@ class KlineHandler(CurKlineHandlerBase):
             order_data,
         )
 
-        return RET_OK, data
+        return (RET_OK, data)
 
 
 class OrderHandler(TradeOrderHandlerBase):
 
-    def __init__(
-        self,
-        strategy,
-        trade_ctx,
-        config,
-    ):
+    def __init__(self, strategy, trade_ctx, config):
         super().__init__()
 
         self.strategy = strategy
@@ -201,49 +168,35 @@ class OrderHandler(TradeOrderHandlerBase):
         self.config = config
 
     def on_recv_rsp(self, rsp_pb):
-        ret, data = super().on_recv_rsp(
-            rsp_pb
-        )
+        ret, data = super().on_recv_rsp(rsp_pb)
 
         if ret != RET_OK:
-            print(
-                "❌ Order callback error:",
-                data,
-            )
-            return RET_ERROR, data
+            print("❌ Order callback error:", data)
+            return (RET_ERROR, data)
 
         if len(data) != 1:
             print(
-                "❌ Order callback error: "
-                "unexpected data length:",
+                "❌ Order callback error: unexpected data length:",
                 len(data),
             )
-            return RET_ERROR, data
+            return (RET_ERROR, data)
 
         order_id = data["order_id"].iloc[0]
-        order_status = (
-            data["order_status"].iloc[0]
-        )
+        order_status = data["order_status"].iloc[0]
 
         if order_status != "FILLED_ALL":
-            return RET_OK, data
+            return (RET_OK, data)
 
         for record in self.strategy.output:
 
             if record["order_id"] != order_id:
                 continue
 
-            record["order_status"] = (
-                order_status
-            )
+            record["order_status"] = order_status
 
-            if (
-                self.config.trade_env
-                == TrdEnv.REAL
-            ):
+            if self.config.trade_env == TrdEnv.REAL:
                 ret2, order_fee = (
-                    self.trade_ctx
-                    .order_fee_query(
+                    self.trade_ctx.order_fee_query(
                         [order_id]
                     )
                 )
@@ -253,37 +206,27 @@ class OrderHandler(TradeOrderHandlerBase):
                         "❌ Order Fee error:",
                         order_fee,
                     )
-                    return RET_ERROR, order_fee
+                    return (RET_ERROR, order_fee)
 
                 record["fee_amount"] = (
-                    order_fee[
-                        "fee_amount"
-                    ].iloc[0]
+                    order_fee["fee_amount"].iloc[0]
                 )
 
                 record["fee_details"] = (
-                    order_fee[
-                        "fee_details"
-                    ].iloc[0]
+                    order_fee["fee_details"].iloc[0]
                 )
 
-                # Real fills are handled
-                # by DealHandler.
+                # Real fills are handled by DealHandler.
                 break
 
-            action = (
-                data["trd_side"].iloc[0]
-            )
+            action = data["trd_side"].iloc[0]
 
             current_price = float(
-                data[
-                    "dealt_avg_price"
-                ].iloc[0]
+                data["dealt_avg_price"].iloc[0]
             )
 
             current_position = (
-                self.strategy
-                .max_position_sell
+                self.strategy.max_position_sell
             )
 
             if action == "BUY":
@@ -299,37 +242,36 @@ class OrderHandler(TradeOrderHandlerBase):
                     - self.strategy.trade_qty,
                 )
 
-            cost_price_before = self.strategy.cost_price
+            cost_price_before = (
+                self.strategy.cost_price
+            )
 
             self.strategy.apply_fill(
                 action=action,
                 price=current_price,
                 qty=self.strategy.trade_qty,
-                position_qty_after=(
-                    position_qty_after
-                ),
+                position_qty_after=position_qty_after,
             )
 
             self._update_record(
                 record,
                 data,
                 current_price,
-                cost_price_before
+                cost_price_before,
             )
 
             self.strategy.pending_order = False
-
             break
 
-        return RET_OK, data
+        return (RET_OK, data)
 
     def _update_record(
         self,
         record,
         data,
         current_price,
-        cost_price_before
-    ):  
+        cost_price_before,
+    ):
         action = data["trd_side"].iloc[0]
 
         record["cost_price"] = (
@@ -346,9 +288,7 @@ class OrderHandler(TradeOrderHandlerBase):
             data["updated_time"].iloc[0]
         )
 
-        record["execution_price"] = (
-            current_price
-        )
+        record["execution_price"] = current_price
 
         record["realized_pl_pct"] = (
             self.strategy.realized_pl_pct
@@ -361,22 +301,16 @@ class OrderHandler(TradeOrderHandlerBase):
         )
 
         print(
-            f"{self.config.symbol} "
-            f"| Price: {current_price:.2f} "
-            f"| Action: {action} "
-            f"| Time: "
-            f"{record['execution_time']}"
+            f"{self.config.symbol} | "
+            f"Price: {current_price:.2f} | "
+            f"Action: {action} | "
+            f"Time: {record['execution_time']}"
         )
 
 
 class DealHandler(TradeDealHandlerBase):
 
-    def __init__(
-        self,
-        strategy,
-        trade_ctx,
-        config,
-    ):
+    def __init__(self, strategy, trade_ctx, config):
         super().__init__()
 
         self.strategy = strategy
@@ -384,16 +318,11 @@ class DealHandler(TradeDealHandlerBase):
         self.config = config
 
     def on_recv_rsp(self, rsp_pb):
-        ret, data = super().on_recv_rsp(
-            rsp_pb
-        )
+        ret, data = super().on_recv_rsp(rsp_pb)
 
         if ret != RET_OK:
-            print(
-                "❌ Deal callback error:",
-                data,
-            )
-            return RET_ERROR, data
+            print("❌ Deal callback error:", data)
+            return (RET_ERROR, data)
 
         print("Deal callback received!")
 
@@ -404,17 +333,14 @@ class DealHandler(TradeDealHandlerBase):
             if record["order_id"] != order_id:
                 continue
 
-            action = (
-                data["trd_side"].iloc[0]
-            )
+            action = data["trd_side"].iloc[0]
 
             current_price = float(
                 data["price"].iloc[0]
             )
 
             current_position = (
-                self.strategy
-                .max_position_sell
+                self.strategy.max_position_sell
             )
 
             if action == "BUY":
@@ -434,9 +360,7 @@ class DealHandler(TradeDealHandlerBase):
                 action=action,
                 price=current_price,
                 qty=self.strategy.trade_qty,
-                position_qty_after=(
-                    position_qty_after
-                ),
+                position_qty_after=position_qty_after,
             )
 
             record["cost_price"] = (
@@ -468,16 +392,15 @@ class DealHandler(TradeDealHandlerBase):
             self.strategy.pending_order = False
 
             print(
-                f"{self.config.symbol} "
-                f"| Price: {current_price:.2f} "
-                f"| Action: {action} "
-                f"| Time: "
-                f"{record['execution_time']}"
+                f"{self.config.symbol} | "
+                f"Price: {current_price:.2f} | "
+                f"Action: {action} | "
+                f"Time: {record['execution_time']}"
             )
 
             break
 
-        return RET_OK, data
+        return (RET_OK, data)
 
 
 def initialize_live(
@@ -490,15 +413,6 @@ def initialize_live(
     Load enough historical candles to warm up
     the strategy before live trading starts.
     """
-
-    from moomoo import (
-        RET_OK,
-        AuType,
-        Session,
-        SubType,
-    )
-
-    from strategy import WINDOW_LENGTH
 
     api_date = config.timezone_date.strftime(
         "%Y-%m-%d"
@@ -543,10 +457,7 @@ def initialize_live(
             init=True,
         )
 
-        current_price = (
-            strategy.prices[-1]
-        )
-
+        current_price = strategy.prices[-1]
         strategy.market_trend = 0
 
         if i == 0:
@@ -567,9 +478,7 @@ def initialize_live(
             )
 
         strategy.unrealized_pl_pct = (
-            strategy.compute_pl(
-                current_price
-            )
+            strategy.compute_pl(current_price)
         )
 
         strategy.trade_qty = 0
@@ -653,9 +562,8 @@ def run_live(
     )
 
     print(
-        f"🚀 Started LIVE TRADING "
-        f"in environment: "
-        f"{config.trade_env}"
+        "🚀 Started LIVE TRADING "
+        f"in environment: {config.trade_env}"
     )
 
     print("Press Ctrl+C to exit.")
@@ -667,11 +575,9 @@ def run_live(
 
         if ret != RET_OK:
             print(
-                "[QUOTE] "
-                "get_global_state failed:",
+                "[QUOTE] get_global_state failed:",
                 state,
             )
-
             time.sleep(1)
             continue
 
