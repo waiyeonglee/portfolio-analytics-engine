@@ -281,6 +281,14 @@ class OrderHandler(TradeOrderHandlerBase):
             else "CLOSED"
         )
 
+        record["trade_qty"] = (
+            self.strategy.trade_qty
+        )
+
+        record["Position Qty"] = (
+            self.strategy.position_qty
+        )
+
         print(
             f"{self.config.symbol} | "
             f"Price: {current_price:.2f} | "
