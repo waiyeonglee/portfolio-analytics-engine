@@ -159,16 +159,17 @@ def get_position_status(trade_ctx, config):
         symbol_positions["qty"].iloc[0]
     )
 
-    average_cost = (
-        symbol_positions["average_cost"].iloc[0]
-    )
+    # Average cost not supported in simulation environment, use diluted cost instead.
+    if config.trade_env == TrdEnv.REAL:
+        average_cost = float(
+            symbol_positions["average_cost"].iloc[0]
+        )
+    else:   
+        average_cost = (
+            symbol_positions["diluted_cost"].iloc[0]
+        )
 
-    if average_cost == "N/A":
-        average_cost = 0.0
-    else:
-        average_cost = float(average_cost)
-
-    return position_qty, average_cost
+    return position_qty, float(average_cost)
 
 
 def get_available_qty(
