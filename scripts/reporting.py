@@ -2,6 +2,7 @@ import os
 import re
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from moomoo import RET_OK
@@ -27,92 +28,80 @@ def calculate_buy_hold(output_df):
 
     return buy_hold_return * 100
 
-def get_risk_free_rates():
-    """Fetch historical US 3-month Treasury bill rates."""
+def calculate_intraday_sharpe(
+    output_df,
+    initial_cash,
+    daily_rf=0.0,
+    periods_per_day=390,
+):
+    """Calculate one-day-scaled intraday strategy Sharpe."""
 
-    url = (
-        "https://fred.stlouisfed.org/graph/"
-        "fredgraph.csv?id=DTB3"
+    df = output_df.loc[
+        output_df["action"] != "INITIALIZING"
+    ].sort_values("time").copy()
+
+    if len(df) < 3:
+        return np.nan
+
+    cash = float(initial_cash)
+    position_qty = 0
+    equity = []
+
+    for _, row in df.iterrows():
+        action = row["action"]
+        qty = float(row["trade_qty"])
+
+        price = float(row["close"])
+
+        execution_price = pd.to_numeric(
+            row.get("execution_price"),
+            errors="coerce",
+        )
+
+        if pd.isna(execution_price):
+            execution_price = price
+
+        fee = pd.to_numeric(
+            row.get("fee_amount", 0),
+            errors="coerce",
+        )
+
+        if pd.isna(fee):
+            fee = 0.0
+
+        if action == "BUY":
+            cash -= qty * execution_price + fee
+            position_qty += qty
+
+        elif action == "SELL":
+            cash += qty * execution_price - fee
+            position_qty -= qty
+
+        equity.append(
+            cash + position_qty * price
+        )
+
+    returns = (
+        pd.Series(equity)
+        .pct_change(fill_method=None)
+        .dropna()
     )
 
-    rf = pd.read_csv(url)
+    if len(returns) < 2:
+        return np.nan
 
-    rf["DATE"] = (
-        pd.to_datetime(rf["observation_date"])
-        .dt.normalize()
-        .astype("datetime64[ns]")
+    excess = returns - daily_rf / periods_per_day
+
+    volatility = excess.std(ddof=1)
+
+    if volatility <= 0:
+        return np.nan
+
+    return (
+        excess.mean()
+        / volatility
+        * np.sqrt(periods_per_day)
     )
-    
-    rf["DTB3"] = pd.to_numeric(
-        rf["DTB3"],
-        errors="coerce",
-    )
-
-    rf = rf.dropna(subset=["DTB3"])
-
-    rf["annual_rf"] = rf["DTB3"] / 100
-    rf["daily_rf"] = rf["annual_rf"] / 252
-
-    return rf[["DATE", "annual_rf", "daily_rf"]]
-
-def add_sharpe_ratio(df):
-    """Calculate historical excess returns and annualized Sharpe."""
-
-    df = df.copy()
-
-    df["date"] = (
-        pd.to_datetime(df["date"], utc=True)
-        .dt.tz_convert("America/New_York")
-        .dt.tz_localize(None)
-        .dt.normalize()
-        .astype("datetime64[ns]")
-    )
-
-    df = (
-        df.sort_values("date")
-        .drop_duplicates(subset=["date"], keep="last")
-        .reset_index(drop=True)
-    )
-
-    df["total_assets"] = pd.to_numeric(
-        df["total_assets"],
-        errors="coerce",
-    )
-
-    df["asset_difference"] = df["total_assets"].diff()
-
-    df["asset_difference_ratio"] = (
-        df["total_assets"].pct_change(fill_method=None) * 100
-    )
-
-    rf = get_risk_free_rates()
-
-    df = pd.merge_asof(
-        df.sort_values("date"),
-        rf.sort_values("DATE"),
-        left_on="date",
-        right_on="DATE",
-        direction="backward",
-    )
-
-    df["daily_return"] = (
-        df["asset_difference_ratio"] / 100
-    )
-
-    df["excess_return"] = (
-        df["daily_return"] - df["daily_rf"]
-    )
-
-    excess = df["excess_return"]
-
-    mean = excess.expanding(min_periods=2).mean()
-    std = excess.expanding(min_periods=2).std(ddof=1)
-
-    df["sharpe_ratio"] = (
-        mean / std.where(std > 0) * (252 ** 0.5)
-    )
-
-    return df.drop(columns=["DATE"])
 
 def compute_daily_pl(
     output_df,
@@ -191,6 +180,7 @@ def get_daily_status(
     realized_pl_sum,
     peak_exposure,
     realized_pl_pct,
+    intraday_sharpe,
     buy_hold_return,
     logs_folder,
     daily_status_file_name,
@@ -310,9 +300,16 @@ def get_daily_status(
         + df["unrealized_pl_sum"]
     )
 
-    # Risk-adjusted performance
-    df = add_sharpe_ratio(df)
+    df["asset_difference"] = (
+        df["total_assets"].diff()
+    )
 
+    df["asset_difference_ratio"] = (
+        df["total_assets"].pct_change(fill_method=None) * 100
+    )
+
+    # Sharpe ratio
+    df["intraday_sharpe"] = intraday_sharpe
     # Buy-and-hold return
     df["buy_hold_return"] = buy_hold_return
 
@@ -325,8 +322,7 @@ def get_daily_status(
         "calculated_pl_sum",
         "asset_difference",
         "asset_difference_ratio",
-        "daily_rf",
-        "sharpe_ratio",
+        "intraday_sharpe",
         "buy_hold_return",
     ]
 
@@ -386,6 +382,12 @@ def save_results(
 
     output_df.to_csv(trading_logs_path,index=False)
 
+    intraday_sharpe = calculate_intraday_sharpe(
+        output_df=output_df,
+        initial_cash=10000,
+        daily_rf=0.00016071,
+    )
+
     buy_hold_return = calculate_buy_hold(output_df)
 
     (
@@ -409,6 +411,7 @@ def save_results(
         realized_pl_sum=realized_pl_sum,
         peak_exposure=peak_exposure,
         realized_pl_pct=realized_pl_pct,
+        intraday_sharpe=intraday_sharpe,
         buy_hold_return=buy_hold_return,
         logs_folder=logs_folder,
         daily_status_file_name=(
