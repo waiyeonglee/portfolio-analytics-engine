@@ -9,7 +9,7 @@ class RuntimeSettings:
     symbol: str
     trade_env: TrdEnv
     live_mode: bool
-    timezone_date: pd.Timestamp
+    market_datetime: pd.Timestamp
     env_name: str
 
 
@@ -27,20 +27,20 @@ def create_runtime(args):
             f"Unsupported environment: {args.env}"
         )
 
-    timezone_date = pd.to_datetime(args.date)
+    market_datetime = pd.to_datetime(args.date)
 
-    if timezone_date.tzinfo is None:
-        timezone_date = timezone_date.tz_localize(
+    if market_datetime.tzinfo is None:
+        market_datetime = market_datetime.tz_localize(
             "Asia/Singapore"
         )
 
     if symbol.startswith("HK."):
-        timezone_date = timezone_date.tz_convert(
+        market_datetime = market_datetime.tz_convert(
             "Asia/Hong_Kong"
         )
 
     elif symbol.startswith("US."):
-        timezone_date = timezone_date.tz_convert(
+        market_datetime = market_datetime.tz_convert(
             "America/New_York"
         )
 
@@ -48,6 +48,6 @@ def create_runtime(args):
         symbol=symbol,
         trade_env=trade_env,
         live_mode=args.live,
-        timezone_date=timezone_date,
+        market_datetime=market_datetime,
         env_name=args.env,
     )

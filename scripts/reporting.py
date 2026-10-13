@@ -7,6 +7,8 @@ import pandas as pd
 
 from moomoo import RET_OK
 
+from broker import get_portfolio_equity
+
 def calculate_buy_hold(output_df):
     """Calculate buy-and-hold return from strategy candles."""
 
@@ -28,29 +30,78 @@ def calculate_buy_hold(output_df):
 
     return buy_hold_return * 100
 
+def get_risk_free_rates():
+    """Fetch historical US 3-month Treasury rates from FRED."""
+
+    url = (
+        "https://fred.stlouisfed.org/graph/"
+        "fredgraph.csv?id=DTB3"
+    )
+
+    rf = pd.read_csv(url)
+
+    rf["DATE"] = pd.to_datetime(rf["observation_date"])
+
+    rf["DTB3"] = pd.to_numeric(
+        rf["DTB3"],
+        errors="coerce",
+    )
+
+    rf = (
+        rf.dropna(subset=["DTB3"])
+        .sort_values("DATE")
+    )
+
+    rf["annual_rf"] = rf["DTB3"] / 100
+    rf["daily_rf"] = rf["annual_rf"] / 252
+
+    return rf[["DATE", "annual_rf", "daily_rf"]]
+
+def get_daily_risk_free_rate(trading_date):
+    """Get the latest available risk-free rate for a trading date."""
+
+    rf = get_risk_free_rates()
+
+    trading_date = pd.Timestamp(trading_date)
+
+    if trading_date.tzinfo is not None:
+        trading_date = trading_date.tz_localize(None)
+
+    trading_date = trading_date.normalize()
+
+    available = rf.loc[
+        rf["DATE"] <= trading_date
+    ]
+
+    if available.empty:
+        raise ValueError(
+            f"No Treasury rate available for {trading_date}"
+        )
+
+    return float(available["daily_rf"].iloc[-1])
+
 def calculate_intraday_sharpe(
     output_df,
     initial_cash,
     daily_rf=0.0,
     periods_per_day=390,
 ):
-    """Calculate one-day-scaled intraday strategy Sharpe."""
+    """Calculate intraday Sharpe and return the equity DataFrame."""
 
     df = output_df.loc[
         output_df["action"] != "INITIALIZING"
     ].sort_values("time").copy()
 
-    if len(df) < 3:
-        return np.nan
-
     cash = float(initial_cash)
     position_qty = 0
-    equity = []
+
+    cash_history = []
+    position_history = []
+    equity_history = []
 
     for _, row in df.iterrows():
         action = row["action"]
         qty = float(row["trade_qty"])
-
         price = float(row["close"])
 
         execution_price = pd.to_numeric(
@@ -77,31 +128,39 @@ def calculate_intraday_sharpe(
             cash += qty * execution_price - fee
             position_qty -= qty
 
-        equity.append(
+        cash_history.append(cash)
+        position_history.append(position_qty)
+        equity_history.append(
             cash + position_qty * price
         )
 
-    returns = (
-        pd.Series(equity)
-        .pct_change(fill_method=None)
-        .dropna()
+    df["cash"] = cash_history
+    df["position_qty"] = position_history
+    df["equity"] = equity_history
+
+    df["returns"] = df["equity"].pct_change(
+        fill_method=None
     )
 
-    if len(returns) < 2:
-        return np.nan
-
-    excess = returns - daily_rf / periods_per_day
-
-    volatility = excess.std(ddof=1)
-
-    if volatility <= 0:
-        return np.nan
-
-    return (
-        excess.mean()
-        / volatility
-        * np.sqrt(periods_per_day)
+    df["excess_return"] = (
+        df["returns"] - daily_rf / periods_per_day
     )
+
+    excess = df["excess_return"].dropna()
+
+    intraday_sharpe = np.nan
+
+    if len(excess) >= 2:
+        volatility = excess.std(ddof=1)
+
+        if pd.notna(volatility) and volatility > 0:
+            intraday_sharpe = (
+                excess.mean()
+                / volatility
+                * np.sqrt(periods_per_day)
+            )
+
+    return df, intraday_sharpe
 
 def compute_daily_pl(
     output_df,
@@ -225,16 +284,6 @@ def get_daily_status(
             }]
         )
 
-    ret, account = trade_ctx.accinfo_query(
-        trd_env=config.trade_env,
-        currency="SGD",
-    )
-
-    if ret != RET_OK:
-        raise RuntimeError(
-            f"Error fetching account info: {account}"
-        )
-
     df["final_cost_price"] = (
         pd.to_numeric(
             df["average_cost"],
@@ -249,10 +298,8 @@ def get_daily_status(
         ).fillna(df["pl_ratio"])
     )
 
-    df["date"] = config.timezone_date
-    df["total_assets"] = float(
-        account["total_assets"].iloc[0]
-    )
+    df["date"] = config.market_datetime
+    df["total_assets"] = get_portfolio_equity(trade_ctx, config, currency="SGD")
 
     df["calculated_realized_pl_sum"] = realized_pl_sum
     df["calculated_realized_pl_ratio"] = realized_pl_pct
@@ -346,7 +393,7 @@ def save_results(
     else:
         mode = "backtest"
         price_column = "close"
-        timestamp = config.timezone_date.strftime("%Y-%m-%d %H_%M_%S")
+        timestamp = config.market_datetime.strftime("%Y-%m-%d %H_%M_%S")
 
     # Filenames for logs
     trading_logs_file_name = (f"{mode}_{config.env_name}""_trading_logs.csv")
@@ -380,14 +427,17 @@ def save_results(
         dt.tz_localize("America/New_York").
         dt.tz_convert("Asia/Singapore"))
 
-    output_df.to_csv(trading_logs_path,index=False)
-
-    intraday_sharpe = calculate_intraday_sharpe(
-        output_df=output_df,
-        initial_cash=10000,
-        daily_rf=0.00016071,
+    daily_rf = get_daily_risk_free_rate(
+        config.market_datetime
     )
-
+    
+    output_df, intraday_sharpe = calculate_intraday_sharpe(
+        output_df=output_df,
+        initial_cash=strategy.initial_equity,
+        daily_rf=daily_rf,
+    )
+    output_df.to_csv(trading_logs_path,index=False)     
+    
     buy_hold_return = calculate_buy_hold(output_df)
 
     (

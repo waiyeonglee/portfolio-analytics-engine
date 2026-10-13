@@ -16,6 +16,10 @@ from moomoo import (
 
 from config import pwd_unlock
 
+# these 3 dont support backtesting:
+# get_position_status (Current position quantity and cost price)
+# get_available_qty (Current available buy/sell quantity)
+# get_portfolio_equity (Current total portfolio equity)
 
 def get_trend_symbol(symbol):
     """Return the benchmark used to determine broad market direction."""
@@ -298,3 +302,18 @@ def get_market_trend_simulation(
     )
 
     return df_market
+
+def get_portfolio_equity(trade_ctx, config, currency="SGD"):
+    """Get current total portfolio equity."""
+
+    ret, account = trade_ctx.accinfo_query(
+        trd_env=config.trade_env,
+        currency=currency,
+    )
+
+    if ret != RET_OK:
+        raise RuntimeError(
+            f"Failed to get portfolio equity: {account}"
+        )
+
+    return float(account["total_assets"].iloc[0])

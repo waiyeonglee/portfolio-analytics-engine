@@ -1,12 +1,11 @@
 import time
+import pandas as pd
 
 from moomoo import (
     RET_ERROR,
     RET_OK,
-    AuType,
     CurKlineHandlerBase,
     OrderType,
-    Session,
     SubType,
     TradeDealHandlerBase,
     TradeOrderHandlerBase,
@@ -14,12 +13,17 @@ from moomoo import (
     TrdSide,
 )
 
+from initialization import (
+    load_historical_candles,
+    initialize_portfolio,
+    warmup_strategy,
+)
+
 from broker import (
     get_available_qty,
     get_market_config,
     get_market_trend_live,
-    get_position_status,
-    place_order,
+    place_order
 )
 
 from strategy import WINDOW_LENGTH
@@ -41,108 +45,80 @@ class KlineHandler(CurKlineHandlerBase):
 
         if ret != RET_OK:
             print("Kline error:", data)
-            return (RET_ERROR, data)
+            return RET_ERROR, data
+
+        if data.empty:
+            return RET_OK, data
 
         current_candle = data.iloc[-1]
 
+        # Wait until the first candle is completed
         if self.prev_candle is None:
             self.prev_candle = current_candle
+            return RET_OK, data
 
-            self.strategy.save_output(
-                self.prev_candle,
-                "INITIALIZING",
-                order_data=None,
-            )
+        if (
+            current_candle["time_key"]
+            == self.prev_candle["time_key"]
+        ):
+            return RET_OK, data
 
-            return (RET_OK, data)
-
-        if current_candle["time_key"] == self.prev_candle["time_key"]:
-            return (RET_OK, data)
-
-        candle_to_process = self.prev_candle
+        candle = self.prev_candle
         self.prev_candle = current_candle
+        current_price = float(candle["close"])
 
-        print(
-            f"Current time: {candle_to_process['time_key']}, "
-            f"Current price: {candle_to_process['close']}"
-        )
-
-        candle_price = float(
-            candle_to_process["close"]
-        )
-
-
+        # Retrieve live market data
         market_trend = get_market_trend_live(
             self.quote_ctx,
             self.config,
         )
 
-        (
-            max_cash_buy,
-            max_position_sell,
-        ) = get_available_qty(
-            self.trade_ctx,
-            self.config,
-            candle_price,
+        max_cash_buy, max_position_sell = (
+            get_available_qty(
+                self.trade_ctx,
+                self.config,
+                current_price,
+            )
         )
 
-        (
-            action,
-            buy_qty,
-            sell_qty,
-            current_price,
-        ) = self.strategy.process_candle(
-            row=candle_to_process,
+        # Shared strategy pipeline
+        self.strategy.process_candle(
+            row=candle,
             market_trend=market_trend,
             max_cash_buy=max_cash_buy,
             max_position_sell=max_position_sell,
+            execute_order=self.execute_order,
         )
 
-        order_data = None
-        self.strategy.trade_qty = 0
+        return RET_OK, data
 
-        if action in ("BUY", "SELL"):
+    def execute_order(self, action, qty, price):
+        """Submit a live Moomoo order."""
 
-            if action == "BUY":
-                qty = buy_qty
-                side = TrdSide.BUY
-                max_qty = self.strategy.max_cash_buy
+        if self.strategy.pending_order:
+            return False, None
 
-            else:
-                qty = sell_qty
-                side = TrdSide.SELL
-                max_qty = self.strategy.max_position_sell
-
-            print(
-                f"Max QTY to {action.title()}: {max_qty}"
-            )
-
-            order_data = place_order(
-                trade_ctx=self.trade_ctx,
-                config=self.config,
-                price=current_price,
-                qty=qty,
-                side=side,
-                order_type=OrderType.MARKET,
-            )
-
-            if order_data is not None:
-                self.strategy.pending_order = True
-
-            else:
-                action = "HOLD"
-
-        else:
-            self.strategy.reset_trade_state()
-
-        self.strategy.save_output(
-            candle_to_process,
-            action,
-            order_data,
+        side = (
+            TrdSide.BUY
+            if action == "BUY"
+            else TrdSide.SELL
         )
 
-        return (RET_OK, data)
+        order_data = place_order(
+            trade_ctx=self.trade_ctx,
+            config=self.config,
+            price=price,
+            qty=qty,
+            side=side,
+            order_type=OrderType.MARKET,
+        )
 
+        if order_data is None:
+            return False, None
+
+        self.strategy.pending_order = True
+
+        return True, order_data
 
 class OrderHandler(TradeOrderHandlerBase):
 
@@ -389,101 +365,45 @@ def initialize_live(
     quote_ctx,
     config,
 ):
-    """
-    Load enough historical candles to warm up
-    the strategy before live trading starts.
-    """
+    """Initialize live trading."""
 
-    api_date = config.timezone_date.strftime(
-        "%Y-%m-%d"
+    session_date = pd.Timestamp(
+        config.market_datetime.date()
     )
 
-    ret, historical_df, _ = (
-        quote_ctx.request_history_kline(
-            config.symbol,
-            api_date,
-            api_date,
-            SubType.K_1M,
-            AuType.NONE,
-            session=Session.ALL,
-        )
+    historical_df = load_historical_candles(
+        quote_ctx,
+        config,
+        session_date,
     )
 
-    if ret != RET_OK:
-        raise RuntimeError(
-            f"Error fetching historical data: "
-            f"{historical_df}"
-        )
+    # Only use completed candles before current market time.
+    market_now = config.market_datetime.tz_localize(None)
 
-    historical_df["time_key"] = (
-        historical_df["time_key"]
-    )
+    historical_df = historical_df.loc[
+        historical_df["time_key"] < market_now
+    ].copy()
 
     df_past = historical_df.iloc[
-        -WINDOW_LENGTH + 1:
+        -(WINDOW_LENGTH - 1):
     ].copy()
 
     if df_past.empty:
         raise RuntimeError(
-            "No historical candles available "
-            "for strategy initialization."
+            "Insufficient candles for live initialization."
         )
 
-    for i, (_, row) in enumerate(
-        df_past.iterrows()
-    ):
-        strategy.update_state_from_row(
-            row,
-            init=True,
-        )
+    initialize_portfolio(
+        strategy=strategy,
+        trade_ctx=trade_ctx,
+        config=config,
+        current_price=float(df_past["close"].iloc[-1]),
+        mode="live",
+    )
 
-        current_price = strategy.prices[-1]
-        strategy.market_trend = 0
-
-        if i == 0:
-
-            (
-                strategy.max_cash_buy,
-                strategy.max_position_sell,
-            ) = get_available_qty(
-                trade_ctx,
-                config,
-                current_price,
-            )
-
-            (
-                strategy.position_qty,
-                strategy.cost_price,
-            ) = get_position_status(
-                trade_ctx,
-                config,
-            )
-
-            strategy.position_open = (
-                strategy.position_qty > 0
-            )
-
-            strategy.total_price = (
-                strategy.cost_price
-                * strategy.position_qty
-            )
-
-        strategy.unrealized_pl_pct = (
-            strategy.compute_pl(current_price)
-        )
-
-        strategy.trade_qty = 0
-        strategy.realized_pl_pct = 0
-
-        strategy.save_output(
-            row,
-            "INITIALIZING",
-            order_data=None,
-        )
-
-    print(
-        "Initialized time:",
-        df_past["time_key"].iloc[-1],
+    warmup_strategy(
+        strategy,
+        df_past,
     )
 
 

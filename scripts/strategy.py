@@ -23,11 +23,6 @@ WINDOW_LENGTH = max(
     LONG_WINDOW + MACD_SIGNAL + 1,
 )
 
-
-# ============================================================
-# HELPERS
-# ============================================================
-
 def round_down_to_lot(qty, lot_size):
     """Round quantity down to the nearest valid lot size."""
 
@@ -35,11 +30,6 @@ def round_down_to_lot(qty, lot_size):
         return 0
 
     return (int(qty) // lot_size) * lot_size
-
-
-# ============================================================
-# STRATEGY
-# ============================================================
 
 class MovingAverageStrategy:
 
@@ -88,22 +78,24 @@ class MovingAverageStrategy:
         self.realized_pl_pct = 0.0
         self.pending_order = False
 
-    # ========================================================
-    # STATE / INDICATORS
-    # ========================================================
+        self.initial_equity = None
+        self.cash = None
+        self.equity_history = []
 
     def process_candle(
         self,
         row,
-        market_trend,
-        max_cash_buy,
-        max_position_sell,
+        market_trend=0.0,
+        max_cash_buy=0,
+        max_position_sell=0,
+        execute_order=None,
+        init=False,
     ):
-        """Process one completed candle and return a trade decision."""
+        """Process a candle for initialization or trading."""
 
-        self.update_state_from_row(
+        self.update_indicators(
             row,
-            init=False,
+            init=init,
         )
 
         current_price = self.prices[-1]
@@ -114,178 +106,121 @@ class MovingAverageStrategy:
             else 0.0
         )
 
-        self.max_cash_buy = int(
-            max_cash_buy
-        )
+        self.max_cash_buy = int(max_cash_buy)
+        self.max_position_sell = int(max_position_sell)
 
-        self.max_position_sell = int(
-            max_position_sell
-        )
-
-        self.unrealized_pl_pct = (
-            self.compute_pl(
-                current_price
-            )
+        self.unrealized_pl_pct = self.compute_pl(
+            current_price
         )
 
         self.reset_trade_state()
 
-        (
-            action,
-            buy_qty,
-            sell_qty,
-        ) = self.buy_or_sell(
+        # Warm-up: update indicators only, no trading
+        if init:
+            self.save_output(
+                row,
+                "INITIALIZING",
+                order_data=None,
+            )
+            return "INITIALIZING"
+
+        # Generate trading signal
+        action, buy_qty, sell_qty = self.buy_or_sell(
             self.unrealized_pl_pct
         )
+
+        order_data = None
 
         if self.pending_order:
             action = "HOLD"
 
-        return (
+        elif action in ("BUY", "SELL"):
+            qty = buy_qty if action == "BUY" else sell_qty
+
+            if qty <= 0:
+                action = "HOLD"
+
+            elif execute_order is None:
+                raise ValueError(
+                    "execute_order is required for trading."
+                )
+
+            else:
+                success, order_data = execute_order(
+                    action,
+                    qty,
+                    current_price,
+                )
+
+                if not success:
+                    action = "HOLD"
+
+        if action == "HOLD":
+            self.reset_trade_state()
+
+        if self.cash is not None:
+            self.equity_history.append(
+                self.cash
+                + self.position_qty * current_price
+            )
+
+        self.save_output(
+            row,
             action,
-            buy_qty,
-            sell_qty,
-            current_price,
+            order_data=order_data,
         )
 
-    def update_state_from_row(
-        self,
-        row,
-        init=False,
-    ):
-        """Update indicators using the latest candle."""
+        return action
 
-        current_price = float(row["close"])
+    def update_indicators(self, row, init=False):
+        """Update price statistics and technical indicators."""
+        price = float(row["close"])
+        previous = self.prices[-1] if self.prices else None
+        self.prices.append(price)
 
-        previous_price = (
-            self.prices[-1]
-            if self.prices
-            else None
+        self.pct_diff = (
+            (price - previous) / previous * 100
+            if previous is not None and previous != 0 else 0.0
         )
-
-        self.prices.append(current_price)
-
-        self._update_price_change(
-            current_price,
-            previous_price,
-        )
-
-        self._update_moving_averages()
-        self._update_rsi()
-        self._update_macd()
-
-        if not init:
-            self._update_vwap(
-                turnover=float(row["turnover"]),
-                volume=float(row["volume"]),
-            )
-
-    def _update_price_change(
-        self,
-        current_price,
-        previous_price,
-    ):
-        if previous_price is None or previous_price == 0:
-            self.pct_diff = 0.0
-        else:
-            self.pct_diff = (
-                (current_price - previous_price)
-                / previous_price
-                * 100
-            )
-
         self.cum_sum_pct += self.pct_diff
 
-    def _update_moving_averages(self):
         if len(self.prices) >= SHORT_WINDOW:
-            self.short_sma = float(
-                np.mean(
-                    self.prices[-SHORT_WINDOW:]
-                )
-            )
+            self.short_sma = float(np.mean(self.prices[-SHORT_WINDOW:]))
         else:
             self.short_sma = 0.0
 
         if len(self.prices) >= LONG_WINDOW:
-            self.long_sma = float(
-                np.mean(
-                    self.prices[-LONG_WINDOW:]
-                )
-            )
+            self.long_sma = float(np.mean(self.prices[-LONG_WINDOW:]))
         else:
             self.long_sma = 0.0
 
-    def _update_rsi(self):
-        required_prices = RSI_PERIOD + 1
-
-        if len(self.prices) < required_prices:
+        if len(self.prices) >= RSI_PERIOD + 1:
+            recent = np.asarray(self.prices[-(RSI_PERIOD + 1):], dtype=float)
+            self.rsi = float(talib.RSI(recent, timeperiod=RSI_PERIOD)[-1])
+        else:
             self.rsi = 0.0
-            return
 
-        prices = np.asarray(
-            self.prices[-required_prices:],
-            dtype=float,
-        )
-
-        rsi = talib.RSI(
-            prices,
-            timeperiod=RSI_PERIOD,
-        )
-
-        self.rsi = float(rsi[-1])
-
-    def _update_macd(self):
-        required_prices = (
-            LONG_WINDOW
-            + MACD_SIGNAL
-            + 1
-        )
-
-        if len(self.prices) < required_prices:
-            self.macd = 0.0
-            self.macd_signal = 0.0
-            self.macd_histogram = 0.0
-            return
-
-        prices = np.asarray(
-            self.prices[-required_prices:],
-            dtype=float,
-        )
-
-        (
-            macd,
-            signal,
-            histogram,
-        ) = talib.MACD(
-            prices,
-            fastperiod=SHORT_WINDOW,
-            slowperiod=LONG_WINDOW,
-            signalperiod=MACD_SIGNAL,
-        )
-
-        self.macd = float(macd[-1])
-        self.macd_signal = float(signal[-1])
-        self.macd_histogram = float(histogram[-1])
-
-    def _update_vwap(
-        self,
-        turnover,
-        volume,
-    ):
-        self.prev_vwap = self.vwap
-
-        self.cum_turnover += turnover
-        self.cum_volume += volume
-
-        if self.cum_volume > 0:
-            self.vwap = (
-                self.cum_turnover
-                / self.cum_volume
+        macd_length = LONG_WINDOW + MACD_SIGNAL + 1
+        if len(self.prices) >= macd_length:
+            recent = np.asarray(self.prices[-macd_length:], dtype=float)
+            macd, signal, histogram = talib.MACD(
+                recent,
+                fastperiod=SHORT_WINDOW,
+                slowperiod=LONG_WINDOW,
+                signalperiod=MACD_SIGNAL,
             )
+            self.macd = float(macd[-1])
+            self.macd_signal = float(signal[-1])
+            self.macd_histogram = float(histogram[-1])
+        else:
+            self.macd = self.macd_signal = self.macd_histogram = 0.0
 
-    # ========================================================
-    # PROFIT / LOSS
-    # ========================================================
+        if not init:
+            self.prev_vwap = self.vwap
+            self.cum_turnover += float(row["turnover"])
+            self.cum_volume += float(row["volume"])
+            if self.cum_volume > 0:
+                self.vwap = self.cum_turnover / self.cum_volume
 
     def compute_pl(
         self,
@@ -302,77 +237,30 @@ class MovingAverageStrategy:
             * 100
         )
 
-    # ========================================================
-    # POSITION SIZING
-    # ========================================================
-
-    def _calculate_buy_qty(self):
-        if self.max_cash_buy <= 0:
-            return 0
-
-        trend_strength = (
-            self.macd
-            - self.macd_signal
+    def buy_or_sell(self, pl_pct=0.0):
+        """Calculate trade sizes and choose BUY, SELL, or HOLD."""
+        strength = self.macd - self.macd_signal
+        buy_ratio = min(0.7, abs(strength / 0.5))
+        buy_qty = round_down_to_lot(
+            self.max_cash_buy * buy_ratio, self.lot_size
         )
 
-        buy_ratio = min(
-            0.7,
-            abs(trend_strength / 0.5),
-        )
-
-        return round_down_to_lot(
-            self.max_cash_buy * buy_ratio,
-            self.lot_size,
-        )
-
-    def _calculate_sell_qty(
-        self,
-        pl_pct,
-    ):
-        available_to_sell = min(
-            self.position_qty,
-            self.max_position_sell,
-        )
-
-        if available_to_sell <= 0:
-            return 0
-
-        sell_ratio = min(
-            1.0,
-            abs(pl_pct / LOSS_PCT),
-        )
-
-        return round_down_to_lot(
-            available_to_sell * sell_ratio,
-            self.lot_size,
-        )
-
-    # ========================================================
-    # DECISION
-    # ========================================================
-
-    def buy_or_sell(
-        self,
-        pl_pct=0.0,
-    ):
-        buy_qty = self._calculate_buy_qty()
-        sell_qty = self._calculate_sell_qty(pl_pct)
-
-        trend_strength = (
-            self.macd
-            - self.macd_signal
+        available = min(self.position_qty, self.max_position_sell)
+        sell_ratio = min(1.0, abs(pl_pct / LOSS_PCT))
+        sell_qty = round_down_to_lot(
+            available * sell_ratio, self.lot_size
         )
 
         if self.market_trend > 0:
             buy_signal = (
                 buy_qty > 0
-                and trend_strength > 0
+                and strength > 0
                 and self.rsi > RSI_THRESHOLD_FOLLOW
             )
         else:
             buy_signal = (
                 buy_qty > 0
-                and trend_strength < 0
+                and strength < 0
                 and self.rsi < RSI_THRESHOLD_REVERT
             )
 
@@ -385,35 +273,14 @@ class MovingAverageStrategy:
         else:
             sell_signal = (
                 sell_qty > 0
-                and (
-                    self.macd < self.macd_signal
-                    or pl_pct <= LOSS_PCT
-                )
+                and (self.macd < self.macd_signal or pl_pct <= LOSS_PCT)
             )
 
         if sell_signal:
-            return (
-                "SELL",
-                buy_qty,
-                sell_qty,
-            )
-
+            return "SELL", buy_qty, sell_qty
         if buy_signal:
-            return (
-                "BUY",
-                buy_qty,
-                sell_qty,
-            )
-
-        return (
-            "HOLD",
-            buy_qty,
-            sell_qty,
-        )
-
-    # ========================================================
-    # EXECUTION ACCOUNTING
-    # ========================================================
+            return "BUY", buy_qty, sell_qty
+        return "HOLD", buy_qty, sell_qty
 
     def apply_fill(
         self,
@@ -481,10 +348,6 @@ class MovingAverageStrategy:
     def reset_trade_state(self):
         self.trade_qty = 0
         self.realized_pl_pct = 0.0
-
-    # ========================================================
-    # OUTPUT
-    # ========================================================
 
     def save_output(
         self,
