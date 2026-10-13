@@ -12,10 +12,6 @@ from broker import (
     get_position_status,
 )
 
-from strategy import (
-    WINDOW_LENGTH
-)
-
 def load_historical_candles(
     quote_ctx,
     config,
@@ -108,29 +104,4 @@ def initialize_portfolio(
     strategy.total_price = (
         strategy.cost_price
         * strategy.position_qty
-    )
-
-def warmup_strategy(
-    strategy,
-    df_past,
-):
-    """Warm up strategy indicators without trading."""
-
-    if len(df_past) < WINDOW_LENGTH - 1:
-        raise RuntimeError(
-            "Insufficient candles for indicator warm-up."
-        )
-
-    for _, row in df_past.iterrows():
-        strategy.process_candle(
-            row=row,
-            market_trend=0.0,
-            max_cash_buy=strategy.max_cash_buy,
-            max_position_sell=strategy.max_position_sell,
-            init=True,
-        )
-
-    print(
-        "Initialized time:",
-        df_past["time_key"].iloc[-1],
     )

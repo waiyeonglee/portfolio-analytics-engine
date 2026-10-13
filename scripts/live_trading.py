@@ -15,8 +15,7 @@ from moomoo import (
 
 from initialization import (
     load_historical_candles,
-    initialize_portfolio,
-    warmup_strategy,
+    initialize_portfolio
 )
 
 from broker import (
@@ -27,7 +26,6 @@ from broker import (
 )
 
 from strategy import WINDOW_LENGTH
-
 
 class KlineHandler(CurKlineHandlerBase):
 
@@ -51,7 +49,7 @@ class KlineHandler(CurKlineHandlerBase):
             return RET_OK, data
 
         current_candle = data.iloc[-1]
-
+    
         # Wait until the first candle is completed
         if self.prev_candle is None:
             self.prev_candle = current_candle
@@ -272,7 +270,6 @@ class OrderHandler(TradeOrderHandlerBase):
             f"Time: {record['execution_time']}"
         )
 
-
 class DealHandler(TradeDealHandlerBase):
 
     def __init__(self, strategy, trade_ctx, config):
@@ -401,11 +398,24 @@ def initialize_live(
         mode="live",
     )
 
-    warmup_strategy(
-        strategy,
-        df_past,
-    )
+    if len(df_past) < WINDOW_LENGTH - 1:
+        raise RuntimeError(
+            "Insufficient candles for indicator warm-up."
+        )
 
+    for _, row in df_past.iterrows():
+        strategy.process_candle(
+            row=row,
+            market_trend=0.0,
+            max_cash_buy=strategy.max_cash_buy,
+            max_position_sell=strategy.max_position_sell,
+            init=True,
+        )
+
+    print(
+        "Initialized time:",
+        df_past["time_key"].iloc[-1],
+    )
 
 def run_live(
     strategy,

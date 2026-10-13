@@ -11,8 +11,7 @@ from strategy import (
 
 from initialization import (
     load_historical_candles,
-    initialize_portfolio,
-    warmup_strategy,
+    initialize_portfolio
 )
 
 def initialize_backtest(
@@ -86,9 +85,23 @@ def initialize_backtest(
         initial_cash=1000.0,
     )
 
-    warmup_strategy(
-        strategy,
-        df_past,
+    if len(df_past) < WINDOW_LENGTH - 1:
+        raise RuntimeError(
+            "Insufficient candles for indicator warm-up."
+        )
+
+    for _, row in df_past.iterrows():
+        strategy.process_candle(
+            row=row,
+            market_trend=0.0,
+            max_cash_buy=strategy.max_cash_buy,
+            max_position_sell=strategy.max_position_sell,
+            init=True,
+        )
+
+    print(
+        "Initialized time:",
+        df_past["time_key"].iloc[-1],
     )
 
     df_market = get_market_trend_simulation(
