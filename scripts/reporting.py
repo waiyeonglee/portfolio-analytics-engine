@@ -37,8 +37,12 @@ def get_risk_free_rates():
 
     rf = pd.read_csv(url)
 
-    rf["DATE"] = pd.to_datetime(rf["observation_date"])
-
+    rf["DATE"] = (
+        pd.to_datetime(rf["observation_date"])
+        .dt.normalize()
+        .astype("datetime64[ns]")
+    )
+    
     rf["DTB3"] = pd.to_numeric(
         rf["DTB3"],
         errors="coerce",
@@ -61,6 +65,7 @@ def add_sharpe_ratio(df):
         .dt.tz_convert("America/New_York")
         .dt.tz_localize(None)
         .dt.normalize()
+        .astype("datetime64[ns]")
     )
 
     df = (
@@ -83,7 +88,7 @@ def add_sharpe_ratio(df):
     rf = get_risk_free_rates()
 
     df = pd.merge_asof(
-        df,
+        df.sort_values("date"),
         rf.sort_values("DATE"),
         left_on="date",
         right_on="DATE",
@@ -320,7 +325,7 @@ def get_daily_status(
         "calculated_pl_sum",
         "asset_difference",
         "asset_difference_ratio",
-        "annual_rf",
+        "daily_rf",
         "sharpe_ratio",
         "buy_hold_return",
     ]
@@ -336,15 +341,16 @@ def save_results(
 
     logs_folder = os.path.join(os.getcwd(), "logs")
     os.makedirs(logs_folder,exist_ok=True)
-    timestamp = (pd.Timestamp.today().strftime("%Y-%m-%d %H_%M_%S"))
     
     if config.live_mode:
         mode = "live"
         price_column = "execution_price"
+        timestamp = (pd.Timestamp.today().strftime("%Y-%m-%d %H_%M_%S"))
 
     else:
         mode = "backtest"
         price_column = "close"
+        timestamp = config.timezone_date.strftime("%Y-%m-%d %H_%M_%S")
 
     # Filenames for logs
     trading_logs_file_name = (f"{mode}_{config.env_name}""_trading_logs.csv")
