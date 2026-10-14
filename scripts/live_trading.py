@@ -25,7 +25,7 @@ from broker import (
     place_order
 )
 
-from strategy import WINDOW_LENGTH
+from strategy import LONG_WINDOW
 
 class KlineHandler(CurKlineHandlerBase):
 
@@ -382,7 +382,7 @@ def initialize_live(
     ].copy()
 
     df_past = historical_df.iloc[
-        -(WINDOW_LENGTH - 1):
+        -(LONG_WINDOW):
     ].copy()
 
     if df_past.empty:
@@ -398,7 +398,7 @@ def initialize_live(
         mode="live",
     )
 
-    if len(df_past) < WINDOW_LENGTH - 1:
+    if len(df_past) < LONG_WINDOW:
         raise RuntimeError(
             "Insufficient candles for indicator warm-up."
         )

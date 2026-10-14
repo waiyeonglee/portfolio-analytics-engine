@@ -1,27 +1,35 @@
 import numpy as np
 import pandas as pd
 import talib
-
+from prediction import predict_ridge
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-RSI_THRESHOLD_FOLLOW = 55
-RSI_THRESHOLD_REVERT = 35
+# RSI_THRESHOLD_FOLLOW = 55
+# RSI_THRESHOLD_REVERT = 35
+# WINDOW_LENGTH = max(
+#     RSI_PERIOD + 1,
+#     LONG_WINDOW + MACD_SIGNAL + 1,
+# )
 
 RSI_PERIOD = 14
 SHORT_WINDOW = 12
-LONG_WINDOW = 26
+LONG_WINDOW = 30
 MACD_SIGNAL = 9
 
 PROFIT_PCT = 1.5
 LOSS_PCT = -1.0
 
-WINDOW_LENGTH = max(
-    RSI_PERIOD + 1,
-    LONG_WINDOW + MACD_SIGNAL + 1,
-)
+FEATURES = [
+    "RSI",
+    "MACD",
+    "MACD Histogram",
+    "sma_diff",
+    "market_trend",
+    "pct_diff",
+]
 
 def round_down_to_lot(qty, lot_size):
     """Round quantity down to the nearest valid lot size."""
@@ -35,6 +43,8 @@ class MovingAverageStrategy:
 
     def __init__(self, lot_size=1):
         self.lot_size = int(lot_size)
+
+        self.forecast = np.nan
 
         # Historical state
         self.prices = []
@@ -97,8 +107,8 @@ class MovingAverageStrategy:
             row,
             init=init,
         )
-
         current_price = self.prices[-1]
+        self.forecast = np.nan
 
         self.market_trend = (
             market_trend
@@ -123,11 +133,28 @@ class MovingAverageStrategy:
                 order_data=None,
             )
             return "INITIALIZING"
+        else:
+            self.forecast = predict_ridge(
+                previous_output=self.output,
+                current_row={
+                    "time": row["time_key"],
+                    "close": current_price,
+                    "RSI": self.rsi,
+                    "MACD": self.macd,
+                    "MACD Histogram": self.macd_histogram,
+                    "short_sma": self.short_sma,
+                    "long_sma": self.long_sma,
+                    "market_trend": self.market_trend,
+                    "pct_diff": self.pct_diff
+                },
+                long_window=LONG_WINDOW,
+                features=FEATURES,
+                alpha=1.0,
+            )
+            print(f"Time: {row['time_key']}, Close: {current_price:.2f}, Forecast: {self.forecast:.4f}")
 
         # Generate trading signal
-        action, buy_qty, sell_qty = self.buy_or_sell(
-            self.unrealized_pl_pct
-        )
+        action, buy_qty, sell_qty = self.buy_or_sell()
 
         order_data = None
 
@@ -237,50 +264,37 @@ class MovingAverageStrategy:
             * 100
         )
 
-    def buy_or_sell(self, pl_pct=0.0):
-        """Calculate trade sizes and choose BUY, SELL, or HOLD."""
-        strength = self.macd - self.macd_signal
-        buy_ratio = min(0.7, abs(strength / 0.5))
-        buy_qty = round_down_to_lot(
-            self.max_cash_buy * buy_ratio, self.lot_size
-        )
+    def buy_or_sell(self):
+        trading_cost = 0.0002  # Example threshold: 0.02%
 
-        available = min(self.position_qty, self.max_position_sell)
-        sell_ratio = min(1.0, abs(pl_pct / LOSS_PCT))
-        sell_qty = round_down_to_lot(
-            available * sell_ratio, self.lot_size
-        )
+        action = "HOLD"
+        buy_qty = 0
+        sell_qty = 0
 
-        if self.market_trend > 0:
-            buy_signal = (
-                buy_qty > 0
-                and strength > 0
-                and self.rsi > RSI_THRESHOLD_FOLLOW
-            )
-        else:
-            buy_signal = (
-                buy_qty > 0
-                and strength < 0
-                and self.rsi < RSI_THRESHOLD_REVERT
-            )
+        if np.isfinite(self.forecast):
 
-        if pl_pct >= PROFIT_PCT:
-            sell_signal = (
-                sell_qty > 0
-                and self.macd < self.macd_signal
-                and self.rsi < RSI_THRESHOLD_REVERT
-            )
-        else:
-            sell_signal = (
-                sell_qty > 0
-                and (self.macd < self.macd_signal or pl_pct <= LOSS_PCT)
-            )
+            if self.forecast > trading_cost:
+                buy_qty = round_down_to_lot(
+                    self.max_cash_buy * 0.7,
+                    self.lot_size,
+                )
 
-        if sell_signal:
-            return "SELL", buy_qty, sell_qty
-        if buy_signal:
-            return "BUY", buy_qty, sell_qty
-        return "HOLD", buy_qty, sell_qty
+                if buy_qty > 0:
+                    action = "BUY"
+
+            elif self.forecast < -trading_cost:
+                sell_qty = round_down_to_lot(
+                    min(
+                        self.position_qty,
+                        self.max_position_sell,
+                    ),
+                    self.lot_size,
+                )
+
+                if sell_qty > 0:
+                    action = "SELL"
+
+        return action, buy_qty, sell_qty
 
     def apply_fill(
         self,
@@ -456,6 +470,9 @@ class MovingAverageStrategy:
             # Fees
             "fee_amount": 0.0,
             "fee_details": None,
+
+            # Forecast return
+            "ridge_forecast": self.forecast,
         }
 
         self.output.append(candle)

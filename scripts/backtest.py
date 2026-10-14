@@ -5,7 +5,7 @@ from broker import (
 )
 
 from strategy import (
-    WINDOW_LENGTH,
+    LONG_WINDOW,
     round_down_to_lot,
 )
 
@@ -63,7 +63,7 @@ def initialize_backtest(
     ].copy()
 
     df_past = warmup_df.iloc[
-        -(WINDOW_LENGTH - 1):
+        -(LONG_WINDOW):
     ].copy()
 
     df_current = historical_df.loc[
@@ -85,7 +85,7 @@ def initialize_backtest(
         initial_cash=1000.0,
     )
 
-    if len(df_past) < WINDOW_LENGTH - 1:
+    if len(df_past) < LONG_WINDOW:
         raise RuntimeError(
             "Insufficient candles for indicator warm-up."
         )
