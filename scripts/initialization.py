@@ -5,8 +5,9 @@ from moomoo import (
     AuType,
     Session,
     SubType,
+    TrdEnv
 )
-from broker import (
+from .broker import (
     get_available_qty,
     get_portfolio_equity,
     get_position_status,
@@ -14,7 +15,7 @@ from broker import (
 
 def load_historical_candles(
     quote_ctx,
-    config,
+    runtime_settings,
     session_date,
 ):
     """Load and sort historical 1-minute candles."""
@@ -22,7 +23,7 @@ def load_historical_candles(
     api_date = session_date.strftime("%Y-%m-%d")
 
     ret, df, _ = quote_ctx.request_history_kline(
-        config.symbol,
+        runtime_settings.symbol,
         api_date,
         api_date,
         SubType.K_1M,
@@ -47,7 +48,7 @@ def load_historical_candles(
 def initialize_portfolio(
     strategy,
     trade_ctx,
-    config,
+    runtime_settings,
     current_price,
     mode,
     initial_cash=1000.0,
@@ -72,15 +73,26 @@ def initialize_portfolio(
     elif mode == "live":
         strategy.initial_equity = get_portfolio_equity(
             trade_ctx,
-            config,
+            runtime_settings,
         )
 
-        (
-            strategy.position_qty,
-            strategy.cost_price,
-        ) = get_position_status(
+        position_df = get_position_status(
             trade_ctx,
-            config,
+            runtime_settings,
+        )
+
+        strategy.position_qty = int(position_df["qty"].iloc[0])
+
+        if runtime_settings.trade_env == TrdEnv.REAL:
+            cost_column = "average_cost"
+        else:
+            cost_column = "cost_price"
+
+        strategy.cost_price = float(
+            pd.to_numeric(
+                position_df[cost_column],
+                errors="coerce",
+            ).iloc[0]
         )
 
         (
@@ -88,7 +100,7 @@ def initialize_portfolio(
             strategy.max_position_sell,
         ) = get_available_qty(
             trade_ctx,
-            config,
+            runtime_settings,
             current_price,
         )
 

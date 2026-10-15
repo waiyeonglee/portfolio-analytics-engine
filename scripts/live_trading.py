@@ -13,29 +13,29 @@ from moomoo import (
     TrdSide,
 )
 
-from initialization import (
+from .initialization import (
     load_historical_candles,
     initialize_portfolio
 )
 
-from broker import (
+from .broker import (
     get_available_qty,
     get_market_config,
     get_market_trend_live,
     place_order
 )
 
-from strategy import LONG_WINDOW
+from .strategy import LONG_WINDOW
 
 class KlineHandler(CurKlineHandlerBase):
 
-    def __init__(self, strategy, quote_ctx, trade_ctx, config):
+    def __init__(self, strategy, quote_ctx, trade_ctx, runtime_settings):
         super().__init__()
 
         self.strategy = strategy
         self.quote_ctx = quote_ctx
         self.trade_ctx = trade_ctx
-        self.config = config
+        self.runtime_settings = runtime_settings
         self.prev_candle = None
 
     def on_recv_rsp(self, rsp_pb):
@@ -68,13 +68,13 @@ class KlineHandler(CurKlineHandlerBase):
         # Retrieve live market data
         market_trend = get_market_trend_live(
             self.quote_ctx,
-            self.config,
+            self.runtime_settings,
         )
 
         max_cash_buy, max_position_sell = (
             get_available_qty(
                 self.trade_ctx,
-                self.config,
+                self.runtime_settings,
                 current_price,
             )
         )
@@ -104,7 +104,7 @@ class KlineHandler(CurKlineHandlerBase):
 
         order_data = place_order(
             trade_ctx=self.trade_ctx,
-            config=self.config,
+            runtime_settings=self.runtime_settings,
             price=price,
             qty=qty,
             side=side,
@@ -120,12 +120,12 @@ class KlineHandler(CurKlineHandlerBase):
 
 class OrderHandler(TradeOrderHandlerBase):
 
-    def __init__(self, strategy, trade_ctx, config):
+    def __init__(self, strategy, trade_ctx, runtime_settings):
         super().__init__()
 
         self.strategy = strategy
         self.trade_ctx = trade_ctx
-        self.config = config
+        self.runtime_settings = runtime_settings
 
     def on_recv_rsp(self, rsp_pb):
         ret, data = super().on_recv_rsp(rsp_pb)
@@ -163,7 +163,7 @@ class OrderHandler(TradeOrderHandlerBase):
 
             record["order_status"] = order_status
 
-            if self.config.trade_env == TrdEnv.REAL:
+            if self.runtime_settings.trade_env == TrdEnv.REAL:
                 ret2, order_fee = (
                     self.trade_ctx.order_fee_query(
                         [order_id]
@@ -264,7 +264,7 @@ class OrderHandler(TradeOrderHandlerBase):
         )
 
         print(
-            f"{self.config.symbol} | "
+            f"{self.runtime_settings.symbol} | "
             f"Price: {current_price:.2f} | "
             f"Action: {action} | "
             f"Time: {record['execution_time']}"
@@ -272,12 +272,12 @@ class OrderHandler(TradeOrderHandlerBase):
 
 class DealHandler(TradeDealHandlerBase):
 
-    def __init__(self, strategy, trade_ctx, config):
+    def __init__(self, strategy, trade_ctx, runtime_settings):
         super().__init__()
 
         self.strategy = strategy
         self.trade_ctx = trade_ctx
-        self.config = config
+        self.runtime_settings = runtime_settings
 
     def on_recv_rsp(self, rsp_pb):
         ret, data = super().on_recv_rsp(rsp_pb)
@@ -347,7 +347,7 @@ class DealHandler(TradeDealHandlerBase):
             )
 
             print(
-                f"{self.config.symbol} | "
+                f"{self.runtime_settings.symbol} | "
                 f"Fill: {fill_qty} | "
                 f"Price: {fill_price:.2f} | "
                 f"Action: {action} | "
@@ -360,22 +360,22 @@ def initialize_live(
     strategy,
     trade_ctx,
     quote_ctx,
-    config,
+    runtime_settings,
 ):
     """Initialize live trading."""
 
     session_date = pd.Timestamp(
-        config.market_datetime.date()
+        runtime_settings.market_datetime.date()
     )
 
     historical_df = load_historical_candles(
         quote_ctx,
-        config,
+        runtime_settings,
         session_date,
     )
 
     # Only use completed candles before current market time.
-    market_now = config.market_datetime.tz_localize(None)
+    market_now = runtime_settings.market_datetime.tz_localize(None)
 
     historical_df = historical_df.loc[
         historical_df["time_key"] < market_now
@@ -393,7 +393,7 @@ def initialize_live(
     initialize_portfolio(
         strategy=strategy,
         trade_ctx=trade_ctx,
-        config=config,
+        runtime_settings=runtime_settings,
         current_price=float(df_past["close"].iloc[-1]),
         mode="live",
     )
@@ -421,7 +421,7 @@ def run_live(
     strategy,
     quote_ctx,
     trade_ctx,
-    config,
+    runtime_settings,
 ):
     """Initialize and start live trading."""
 
@@ -429,14 +429,14 @@ def run_live(
         strategy,
         trade_ctx,
         quote_ctx,
-        config,
+        runtime_settings,
     )
 
     trade_ctx.set_handler(
         OrderHandler(
             strategy,
             trade_ctx,
-            config,
+            runtime_settings,
         )
     )
 
@@ -445,21 +445,21 @@ def run_live(
             strategy,
             quote_ctx,
             trade_ctx,
-            config,
+            runtime_settings,
         )
     )
 
-    if config.trade_env == TrdEnv.REAL:
+    if runtime_settings.trade_env == TrdEnv.REAL:
         trade_ctx.set_handler(
             DealHandler(
                 strategy,
                 trade_ctx,
-                config,
+                runtime_settings,
             )
         )
 
     ret, data = quote_ctx.subscribe(
-        [config.symbol],
+        [runtime_settings.symbol],
         [SubType.K_1M],
         subscribe_push=True,
     )
@@ -470,12 +470,12 @@ def run_live(
         )
 
     _, market_key = get_market_config(
-        config.symbol
+        runtime_settings.symbol
     )
 
     print(
         "🚀 Started LIVE TRADING "
-        f"in environment: {config.trade_env}"
+        f"in environment: {runtime_settings.trade_env}"
     )
 
     print("Press Ctrl+C to exit.")

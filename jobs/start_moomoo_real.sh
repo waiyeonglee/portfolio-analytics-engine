@@ -8,4 +8,5 @@ aws s3 sync "s3://moomoos3/scripts/" "/home/ubuntu/moomoo_scripts/scripts/" \
 # Find and delete log files older than 30 days
 # find /home/ubuntu/moomoo_scripts/logs/ -type f -mtime +30 -delete
 # Run main.py
-/home/ubuntu/moomoo/bin/python3 -u /home/ubuntu/moomoo_scripts/scripts/main.py --env "real" --live
+cd /home/ubuntu/moomoo_scripts
+/home/ubuntu/moomoo/bin/python3 -u -m scripts.main --env "real" --live

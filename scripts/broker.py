@@ -14,7 +14,7 @@ from moomoo import (
     TrdMarket,
 )
 
-from config import pwd_unlock
+from .config import pwd_unlock
 
 # these 3 dont support backtesting:
 # get_position_status (Current position quantity and cost price)
@@ -32,7 +32,6 @@ def get_trend_symbol(symbol):
 
     raise ValueError(f"Unsupported symbol: {symbol}")
 
-
 def get_market_config(symbol):
     """Return Moomoo market enum and global-state key."""
 
@@ -44,11 +43,10 @@ def get_market_config(symbol):
 
     raise ValueError(f"Unsupported symbol: {symbol}")
 
-
-def create_contexts(config):
+def create_contexts(runtime_settings):
     """Create and initialize Moomoo quote/trade contexts."""
 
-    trade_market, _ = get_market_config(config.symbol)
+    trade_market, _ = get_market_config(runtime_settings.symbol)
 
     quote_ctx = OpenQuoteContext(
         host="127.0.0.1",
@@ -62,7 +60,7 @@ def create_contexts(config):
         security_firm=SecurityFirm.FUTUSG,
     )
 
-    if config.trade_env == TrdEnv.REAL:
+    if runtime_settings.trade_env == TrdEnv.REAL:
         ret, data = trade_ctx.unlock_trade(
             password_md5=pwd_unlock
         )
@@ -77,7 +75,7 @@ def create_contexts(config):
     ret, stock_data = quote_ctx.get_stock_basicinfo(
         market=trade_market,
         stock_type=SecurityType.STOCK,
-        code_list=[config.symbol],
+        code_list=[runtime_settings.symbol],
     )
 
     if ret != RET_OK:
@@ -93,7 +91,6 @@ def create_contexts(config):
 
     return quote_ctx, trade_ctx, lot_size
 
-
 def close_contexts(quote_ctx, trade_ctx):
     """Close Moomoo contexts."""
 
@@ -103,10 +100,9 @@ def close_contexts(quote_ctx, trade_ctx):
     if trade_ctx is not None:
         trade_ctx.close()
 
-
 def place_order(
     trade_ctx,
-    config,
+    runtime_settings,
     price,
     qty,
     side,
@@ -117,77 +113,79 @@ def place_order(
     ret, data = trade_ctx.place_order(
         price=price,
         qty=qty,
-        code=config.symbol,
+        code=runtime_settings.symbol,
         trd_side=side,
         order_type=order_type,
-        trd_env=config.trade_env,
+        trd_env=runtime_settings.trade_env,
     )
 
     if ret != RET_OK:
         print(
             f"❌ Order submission failed: "
-            f"{side} {config.symbol} | {data}"
+            f"{side} {runtime_settings.symbol} | {data}"
         )
         return None
 
     print(
         f"✅ Order submitted: "
-        f"{side} {qty} {config.symbol}"
+        f"{side} {qty} {runtime_settings.symbol}"
     )
 
     return data
 
-
-def get_position_status(trade_ctx, config):
-    """Return current position quantity and cost price for the configured symbol."""
+def get_position_status(trade_ctx, runtime_settings):
+    """Get position details using the appropriate cost basis."""
 
     ret, positions = trade_ctx.position_list_query(
-        trd_env=config.trade_env
+        trd_env=runtime_settings.trade_env
     )
 
     if ret != RET_OK:
-        print(
-            "Error fetching positions:",
-            positions,
+        raise RuntimeError(
+            f"Error fetching positions: {positions}"
         )
-        return 0.0, 0.0
 
-    symbol_positions = positions.loc[
-        positions["code"] == config.symbol
+    position_columns = [
+        "code",
+        "qty",
+        "nominal_price",
+        "cost_price",
+        "diluted_cost",
+        "average_cost",
+        "market_val",
+        "pl_ratio",
+        "pl_ratio_avg_cost",
     ]
 
-    if symbol_positions.empty:
-        return 0.0, 0.0
+    df = positions.loc[
+        (positions["code"] == runtime_settings.symbol)
+        & (positions["qty"] > 0)
+    ].copy()
 
-    position_qty = int(
-        symbol_positions["qty"].iloc[0]
-    )
+    if df.empty:
+        df = pd.DataFrame([{
+            "code": runtime_settings.symbol,
+            **{
+                col: 0
+                for col in position_columns
+                if col != "code"
+            },
+        }])
 
-    # Average cost not supported in simulation environment, use diluted cost instead.
-    if config.trade_env == TrdEnv.REAL:
-        average_cost = float(
-            symbol_positions["average_cost"].iloc[0]
-        )
-    else:   
-        average_cost = (
-            symbol_positions["diluted_cost"].iloc[0]
-        )
-
-    return position_qty, float(average_cost)
-
+    return df
 
 def get_available_qty(
     trade_ctx,
-    config,
+    runtime_settings,
     current_price,
 ):
     """Return available buy and sell quantities."""
 
     ret, trading_info = trade_ctx.acctradinginfo_query(
         order_type=OrderType.NORMAL,
-        code=config.symbol,
+        code=runtime_settings.symbol,
         price=current_price,
-        trd_env=config.trade_env,
+        trd_env=runtime_settings.trade_env,
     )
 
     if ret != RET_OK:
@@ -207,15 +205,14 @@ def get_available_qty(
 
     return max_cash_buy, max_position_sell
 
-
 def get_market_trend_live(
     quote_ctx,
-    config,
+    runtime_settings,
 ):
     """Return live broad-market price change."""
 
     trend_code = get_trend_symbol(
-        config.symbol
+        runtime_settings.symbol
     )
 
     ret, df_market = quote_ctx.get_market_snapshot(
@@ -236,13 +233,13 @@ def get_market_trend_live(
 
 def get_market_trend_simulation(
     quote_ctx,
-    config,
+    runtime_settings,
     session_date,
 ):
     """Load historical benchmark candles."""
 
     trend_code = get_trend_symbol(
-        config.symbol
+        runtime_settings.symbol
     )
 
     api_date = session_date.strftime(
@@ -303,11 +300,11 @@ def get_market_trend_simulation(
 
     return df_market
 
-def get_portfolio_equity(trade_ctx, config, currency="SGD"):
+def get_portfolio_equity(trade_ctx, runtime_settings, currency="SGD"):
     """Get current total portfolio equity."""
 
     ret, account = trade_ctx.accinfo_query(
-        trd_env=config.trade_env,
+        trd_env=runtime_settings.trade_env,
         currency=currency,
     )
 

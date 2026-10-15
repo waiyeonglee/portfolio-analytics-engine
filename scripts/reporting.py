@@ -1,13 +1,11 @@
 import os
 import re
 from pathlib import Path
-
+from moomoo import TrdEnv
 import numpy as np
 import pandas as pd
 
-from moomoo import RET_OK
-
-from broker import get_portfolio_equity
+from .broker import get_portfolio_equity, get_position_status
 
 def calculate_buy_hold(output_df):
     """Calculate buy-and-hold return from strategy candles."""
@@ -88,9 +86,7 @@ def calculate_intraday_sharpe(
 ):
     """Calculate intraday Sharpe and return the equity DataFrame."""
 
-    df = output_df.loc[
-        output_df["action"] != "INITIALIZING"
-    ].sort_values("time").copy()
+    df = output_df.sort_values("time").copy()
 
     cash = float(initial_cash)
     position_qty = 0
@@ -138,15 +134,25 @@ def calculate_intraday_sharpe(
     df["position_qty"] = position_history
     df["equity"] = equity_history
 
-    df["returns"] = df["equity"].pct_change(
-        fill_method=None
+    trading_mask = df["action"] != "INITIALIZING"
+
+    df["returns"] = np.nan
+
+    df.loc[trading_mask, "returns"] = (
+        df.loc[trading_mask, "equity"]
+        .pct_change(fill_method=None)
     )
 
-    df["excess_return"] = (
-        df["returns"] - daily_rf / periods_per_day
+    df["excess_return"] = np.nan
+
+    df.loc[trading_mask, "excess_return"] = (
+        df.loc[trading_mask, "returns"]
+        - daily_rf / periods_per_day
     )
 
-    excess = df["excess_return"].dropna()
+    excess = df.loc[
+        trading_mask, "excess_return"
+    ].dropna()
 
     intraday_sharpe = np.nan
 
@@ -235,7 +241,7 @@ def compute_daily_pl(
 
 def get_daily_status(
     trade_ctx,
-    config,
+    runtime_settings,
     realized_pl_sum,
     peak_exposure,
     realized_pl_pct,
@@ -246,60 +252,36 @@ def get_daily_status(
 ):
     """Build daily portfolio status with risk-adjusted metrics."""
 
-    ret, positions = trade_ctx.position_list_query(
-        trd_env=config.trade_env
+    df = get_position_status(
+        trade_ctx,
+        runtime_settings,
     )
 
-    if ret != RET_OK:
-        raise RuntimeError(
-            f"Error fetching positions: {positions}"
-        )
+    if runtime_settings.trade_env == TrdEnv.REAL:
+        # REAL: Average cost excludes previously realized P/L.
+        df["cost_basis_type"] = "average_cost"
 
-    position_columns = [
-        "code",
-        "qty",
-        "nominal_price",
-        "cost_price",
-        "average_cost",
-        "market_val",
-        "pl_ratio",
-        "pl_ratio_avg_cost",
-    ]
-
-    df = positions.loc[
-        (positions["code"] == config.symbol)
-        & (positions["qty"] > 0),
-        position_columns,
-    ].copy()
-
-    if df.empty:
-        df = pd.DataFrame(
-            [{
-                "code": config.symbol,
-                **{
-                    col: 0
-                    for col in position_columns
-                    if col != "code"
-                },
-            }]
-        )
-
-    df["final_cost_price"] = (
-        pd.to_numeric(
+        df["final_cost_price"] = pd.to_numeric(
             df["average_cost"],
             errors="coerce",
-        ).fillna(df["cost_price"])
-    )
+        )
 
-    df["unrealized_pl_ratio"] = (
-        pd.to_numeric(
-            df["pl_ratio_avg_cost"],
+    else:
+        # SIMULATE: Diluted cost may incorporate previous realized P/L.
+        df["cost_basis_type"] = "diluted_cost"
+
+        df["final_cost_price"] = pd.to_numeric(
+            df["cost_price"],
             errors="coerce",
-        ).fillna(df["pl_ratio"])
-    )
+        )
 
-    df["date"] = config.market_datetime
-    df["total_assets"] = get_portfolio_equity(trade_ctx, config, currency="SGD")
+    # Calculate position P/L using the selected cost basis.
+    df["position_pl_sum"] = (
+        df["nominal_price"] - df["final_cost_price"]
+    ) * df["qty"]
+    
+    df["date"] = runtime_settings.market_datetime
+    df["total_assets"] = get_portfolio_equity(trade_ctx, runtime_settings, currency="SGD")
 
     df["calculated_realized_pl_sum"] = realized_pl_sum
     df["calculated_realized_pl_ratio"] = realized_pl_pct
@@ -340,35 +322,41 @@ def get_daily_status(
                 ignore_index=True,
             )
 
-    # Portfolio P/L
-    df["unrealized_pl_sum"] = (
-        df["unrealized_pl_ratio"]
-        / 100
-        * df["market_val"]
-    )
-
-    df["calculated_pl_sum"] = (
-        df["calculated_realized_pl_sum"]
-        + df["unrealized_pl_sum"]
-    )
+    # Calculate daily P/L based on the cost basis used by Moomoo.
+    if runtime_settings.trade_env == TrdEnv.REAL:
+        # Average cost excludes previously realized P/L.
+        # Daily P/L = today's realized P/L + change in unrealized P/L.
+        df["calculated_pl_sum"] = (
+            df["calculated_realized_pl_sum"]
+            + df["position_pl_sum"].diff()
+        )
+    else:
+        # Diluted cost incorporates previous realized gains/losses.
+        # Daily P/L is estimated from the change in diluted-cost P/L.
+        # This may not capture P/L correctly when positions are fully closed.
+        df["calculated_pl_sum"] = (
+            df["position_pl_sum"].diff()
+        )
 
     df["asset_difference"] = (
         df["total_assets"].diff()
     )
 
-    df["asset_difference_ratio"] = (
-        df["total_assets"].pct_change(fill_method=None) * 100
+    df["reconciliation_difference"] = (
+        df["asset_difference"]
+        - df["calculated_pl_sum"]
     )
-
+    
     output_columns = [
         "date",
         "code",
         "qty",
-        "market_val",
+        "cost_basis_type",
+        "final_cost_price",
         "total_assets",
         "calculated_pl_sum",
         "asset_difference",
-        "asset_difference_ratio",
+        "reconciliation_difference",
         "intraday_sharpe",
         "buy_hold_return",
     ]
@@ -378,14 +366,14 @@ def get_daily_status(
 def save_results(
     strategy,
     trade_ctx,
-    config,
+    runtime_settings,
 ):
     """Save trading logs, P/L, and daily status."""
 
     logs_folder = os.path.join(os.getcwd(), "logs")
     os.makedirs(logs_folder,exist_ok=True)
     
-    if config.live_mode:
+    if runtime_settings.live_mode:
         mode = "live"
         price_column = "execution_price"
         timestamp = (pd.Timestamp.today().strftime("%Y-%m-%d %H_%M_%S"))
@@ -393,12 +381,12 @@ def save_results(
     else:
         mode = "backtest"
         price_column = "close"
-        timestamp = config.market_datetime.strftime("%Y-%m-%d %H_%M_%S")
+        timestamp = runtime_settings.market_datetime.strftime("%Y-%m-%d %H_%M_%S")
 
     # Filenames for logs
-    trading_logs_file_name = (f"{mode}_{config.env_name}""_trading_logs.csv")
-    pl_file_name = (f"{mode}_{config.env_name}""_pl.csv")
-    daily_status_file_name = (f"{mode}_{config.env_name}""_daily_status.csv")
+    trading_logs_file_name = (f"{mode}_{runtime_settings.env_name}""_trading_logs.csv")
+    pl_file_name = (f"{mode}_{runtime_settings.env_name}""_pl.csv")
+    daily_status_file_name = (f"{mode}_{runtime_settings.env_name}""_daily_status.csv")
 
     trading_logs_path = os.path.join(
         logs_folder,
@@ -428,7 +416,7 @@ def save_results(
         dt.tz_convert("Asia/Singapore"))
 
     daily_rf = get_daily_risk_free_rate(
-        config.market_datetime
+        runtime_settings.market_datetime
     )
     
     output_df, intraday_sharpe = calculate_intraday_sharpe(
@@ -457,7 +445,7 @@ def save_results(
 
     daily_status = get_daily_status(
         trade_ctx=trade_ctx,
-        config=config,
+        runtime_settings=runtime_settings,
         realized_pl_sum=realized_pl_sum,
         peak_exposure=peak_exposure,
         realized_pl_pct=realized_pl_pct,

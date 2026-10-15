@@ -1,13 +1,12 @@
 import argparse
 import pandas as pd
-from pathlib import Path
 
-from backtest import run_backtest
-from broker import close_contexts, create_contexts
-from live_trading import run_live
-from reporting import save_results
-from runtime import create_runtime
-from strategy import MovingAverageStrategy
+from .backtest import run_backtest
+from .broker import close_contexts, create_contexts
+from .live_trading import run_live
+from .reporting import save_results
+from .runtime import create_runtime
+from .strategy import MovingAverageStrategy
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -38,32 +37,32 @@ def parse_args():
 
 def main():
     args = parse_args()
-    config = create_runtime(args)
+    runtime_settings = create_runtime(args)
 
     quote_ctx = None
     trade_ctx = None
     strategy = None
 
     try:
-        quote_ctx, trade_ctx, lot_size = create_contexts(config)
+        quote_ctx, trade_ctx, lot_size = create_contexts(runtime_settings)
 
         strategy = MovingAverageStrategy(
             lot_size=lot_size
         )
 
-        if config.live_mode:
+        if runtime_settings.live_mode:
             run_live(
                 strategy,
                 quote_ctx,
                 trade_ctx,
-                config,
+                runtime_settings,
             )
         else:
             run_backtest(
                 strategy,
                 quote_ctx,
                 trade_ctx,
-                config,
+                runtime_settings,
             )
 
     except KeyboardInterrupt:
@@ -78,7 +77,7 @@ def main():
             save_results(
                 strategy,
                 trade_ctx,
-                config,
+                runtime_settings,
             )
 
         close_contexts(

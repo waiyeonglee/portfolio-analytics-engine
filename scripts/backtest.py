@@ -1,15 +1,15 @@
 import pandas as pd
 
-from broker import (
+from .broker import (
     get_market_trend_simulation
 )
 
-from strategy import (
+from .strategy import (
     LONG_WINDOW,
     round_down_to_lot,
 )
 
-from initialization import (
+from .initialization import (
     load_historical_candles,
     initialize_portfolio
 )
@@ -18,11 +18,11 @@ def initialize_backtest(
     strategy,
     trade_ctx,
     quote_ctx,
-    config,
+    runtime_settings,
 ):
     """Initialize historical backtesting."""
 
-    market_datetime = config.market_datetime
+    market_datetime = runtime_settings.market_datetime
 
     if market_datetime.time() >= pd.Timestamp(
         "16:00"
@@ -53,7 +53,7 @@ def initialize_backtest(
 
     historical_df = load_historical_candles(
         quote_ctx,
-        config,
+        runtime_settings,
         session_date,
     )
 
@@ -79,7 +79,7 @@ def initialize_backtest(
     initialize_portfolio(
         strategy=strategy,
         trade_ctx=trade_ctx,
-        config=config,
+        runtime_settings=runtime_settings,
         current_price=float(df_past["close"].iloc[-1]),
         mode="backtest",
         initial_cash=1000.0,
@@ -106,7 +106,7 @@ def initialize_backtest(
 
     df_market = get_market_trend_simulation(
         quote_ctx,
-        config,
+        runtime_settings,
         session_date,
     )
 
@@ -189,7 +189,7 @@ def run_backtest(
     strategy,
     quote_ctx,
     trade_ctx,
-    config,
+    runtime_settings,
 ):
     """Prepare and run a complete backtest."""
 
@@ -200,7 +200,7 @@ def run_backtest(
         strategy,
         trade_ctx,
         quote_ctx,
-        config,
+        runtime_settings,
     )
 
     execute_backtest(
