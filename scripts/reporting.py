@@ -305,6 +305,11 @@ def get_daily_status(
     df["calculated_realized_pl_ratio"] = realized_pl_pct
     df["calculated_peak_exposure"] = peak_exposure
 
+    # Sharpe ratio
+    df["intraday_sharpe"] = intraday_sharpe
+    # Buy-and-hold return
+    df["buy_hold_return"] = buy_hold_return
+    
     # Load previous daily status
     files = list(
         Path(logs_folder).glob(
@@ -354,11 +359,6 @@ def get_daily_status(
     df["asset_difference_ratio"] = (
         df["total_assets"].pct_change(fill_method=None) * 100
     )
-
-    # Sharpe ratio
-    df["intraday_sharpe"] = intraday_sharpe
-    # Buy-and-hold return
-    df["buy_hold_return"] = buy_hold_return
 
     output_columns = [
         "date",
