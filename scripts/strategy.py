@@ -395,7 +395,7 @@ class MovingAverageStrategy:
         candle = {
             # Candle
             "code": row["code"],
-            "time": row["time_key"],
+            "time": pd.Timestamp(row["time_key"]),
             "open": row["open"],
             "close": row["close"],
 

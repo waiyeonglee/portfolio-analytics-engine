@@ -86,7 +86,15 @@ def calculate_intraday_sharpe(
 ):
     """Calculate intraday Sharpe and return the equity DataFrame."""
 
-    df = output_df.sort_values("time").copy()
+    df = output_df.copy()
+
+    df["time"] = pd.to_datetime(
+        df["time"],
+        errors="coerce",
+        format="mixed",
+    )
+
+    df = df.sort_values("time").reset_index(drop=True)
 
     cash = float(initial_cash)
     position_qty = 0
