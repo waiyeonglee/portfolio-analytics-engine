@@ -151,7 +151,7 @@ class MovingAverageStrategy:
                 features=FEATURES,
                 alpha=1.0,
             )
-            # print(f"Time: {row['time_key']}, Close: {current_price:.2f}, Forecast: {self.forecast:.4f}")
+            print(f"Time: {row['time_key']}, Close: {current_price:.2f}, Forecast: {self.forecast:.4f}")
 
         # Generate trading signal
         action, buy_qty, sell_qty = self.buy_or_sell()
