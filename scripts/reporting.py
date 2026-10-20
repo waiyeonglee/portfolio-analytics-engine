@@ -362,6 +362,8 @@ def get_daily_status(
         "cost_basis_type",
         "final_cost_price",
         "total_assets",
+        "calculated_realized_pl_sum",
+        "position_pl_sum",
         "calculated_pl_sum",
         "asset_difference",
         "reconciliation_difference",
