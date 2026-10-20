@@ -346,10 +346,18 @@ def get_daily_status(
             df["position_pl_sum"].diff()
         )
 
+    df["pl_difference_pct"] = (
+        df["calculated_pl_sum"].pct_change() * 100
+    )
+    
     df["asset_difference"] = (
         df["total_assets"].diff()
     )
 
+    df["asset_difference_pct"] = (
+        df["total_assets"].pct_change() * 100
+    )
+    
     df["reconciliation_difference"] = (
         df["asset_difference"]
         - df["calculated_pl_sum"]
@@ -365,7 +373,9 @@ def get_daily_status(
         "calculated_realized_pl_sum",
         "position_pl_sum",
         "calculated_pl_sum",
+        "pl_difference_pct",
         "asset_difference",
+        "asset_difference_pct",
         "reconciliation_difference",
         "intraday_sharpe",
         "buy_hold_return",
