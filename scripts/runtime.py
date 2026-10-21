@@ -11,6 +11,7 @@ class RuntimeSettings:
     live_mode: bool
     market_datetime: pd.Timestamp
     env_name: str
+    currency: str
 
 
 def create_runtime(args):
@@ -33,16 +34,20 @@ def create_runtime(args):
         market_datetime = market_datetime.tz_localize(
             "Asia/Singapore"
         )
+        currency = "SGD"
 
     if symbol.startswith("HK."):
         market_datetime = market_datetime.tz_convert(
             "Asia/Hong_Kong"
         )
+        currency = "HKD"
+
 
     elif symbol.startswith("US."):
         market_datetime = market_datetime.tz_convert(
             "America/New_York"
         )
+        currency = "USD"
 
     return RuntimeSettings(
         symbol=symbol,
@@ -50,4 +55,5 @@ def create_runtime(args):
         live_mode=args.live,
         market_datetime=market_datetime,
         env_name=args.env,
+        currency=currency
     )

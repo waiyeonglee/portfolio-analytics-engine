@@ -300,7 +300,7 @@ def get_market_trend_simulation(
 
     return df_market
 
-def get_portfolio_equity(trade_ctx, runtime_settings, currency="SGD"):
+def get_portfolio_equity(trade_ctx, runtime_settings, currency="USD"):
     """Get current total portfolio equity."""
 
     ret, account = trade_ctx.accinfo_query(

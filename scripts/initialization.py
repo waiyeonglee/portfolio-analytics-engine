@@ -58,7 +58,8 @@ def initialize_portfolio(
     if mode == "backtest":
         strategy.initial_equity = float(initial_cash)
         strategy.cash = float(initial_cash)
-        
+
+        strategy.initial_position_qty = 0
         strategy.position_qty = 0
         strategy.cost_price = 0.0
 
@@ -74,15 +75,19 @@ def initialize_portfolio(
         strategy.initial_equity = get_portfolio_equity(
             trade_ctx,
             runtime_settings,
+            currency=runtime_settings.currency,
         )
+        
+        # strategy.cash not used in live mode
 
         position_df = get_position_status(
             trade_ctx,
             runtime_settings,
         )
-
-        strategy.position_qty = int(position_df["qty"].iloc[0])
-
+        
+        strategy.initial_position_qty =  int(position_df["qty"].iloc[0])
+        strategy.position_qty = strategy.initial_position_qty
+        
         if runtime_settings.trade_env == TrdEnv.REAL:
             cost_column = "average_cost"
         else:

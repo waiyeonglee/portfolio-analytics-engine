@@ -44,7 +44,7 @@ class MovingAverageStrategy:
     def __init__(self, lot_size=1):
         self.lot_size = int(lot_size)
 
-        self.forecast = np.nan
+        self.ridge_forecast_return = np.nan
 
         # Historical state
         self.prices = []
@@ -90,8 +90,8 @@ class MovingAverageStrategy:
 
         self.initial_equity = None
         self.cash = None
-        self.equity_history = []
-
+        self.initial_position_qty = 0
+        
     def process_candle(
         self,
         row,
@@ -108,7 +108,7 @@ class MovingAverageStrategy:
             init=init,
         )
         current_price = self.prices[-1]
-        self.forecast = np.nan
+        self.ridge_forecast_return = np.nan
 
         self.market_trend = (
             market_trend
@@ -134,7 +134,7 @@ class MovingAverageStrategy:
             )
             return "INITIALIZING"
         else:
-            self.forecast = predict_ridge(
+            self.ridge_forecast_return = predict_ridge(
                 previous_output=self.output,
                 current_row={
                     "time": row["time_key"],
@@ -151,7 +151,7 @@ class MovingAverageStrategy:
                 features=FEATURES,
                 alpha=1.0,
             )
-            print(f"Time: {row['time_key']}, Close: {current_price:.2f}, Forecast: {self.forecast:.4f}")
+            print(f"Time: {row['time_key']}, Close: {current_price:.2f}, Forecast Return: {self.ridge_forecast_return:.4f}")
 
         # Generate trading signal
         action, buy_qty, sell_qty = self.buy_or_sell()
@@ -184,12 +184,6 @@ class MovingAverageStrategy:
 
         if action == "HOLD":
             self.reset_trade_state()
-
-        if self.cash is not None:
-            self.equity_history.append(
-                self.cash
-                + self.position_qty * current_price
-            )
 
         self.save_output(
             row,
@@ -271,9 +265,9 @@ class MovingAverageStrategy:
         buy_qty = 0
         sell_qty = 0
 
-        if np.isfinite(self.forecast):
+        if np.isfinite(self.ridge_forecast_return):
 
-            if self.forecast > trading_cost:
+            if self.ridge_forecast_return > trading_cost:
                 buy_qty = round_down_to_lot(
                     self.max_cash_buy * 0.7,
                     self.lot_size,
@@ -282,7 +276,7 @@ class MovingAverageStrategy:
                 if buy_qty > 0:
                     action = "BUY"
 
-            elif self.forecast < -trading_cost:
+            elif self.ridge_forecast_return < -trading_cost:
                 sell_qty = round_down_to_lot(
                     min(
                         self.position_qty,
@@ -472,7 +466,7 @@ class MovingAverageStrategy:
             "fee_details": None,
 
             # Forecast return
-            "ridge_forecast": self.forecast,
+            "ridge_forecast_return": self.ridge_forecast_return,
         }
 
         self.output.append(candle)

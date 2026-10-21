@@ -81,6 +81,7 @@ def get_daily_risk_free_rate(trading_date):
 def calculate_intraday_sharpe(
     output_df,
     initial_cash,
+    initial_position_qty=0,
     daily_rf=0.0,
     periods_per_day=390,
 ):
@@ -97,7 +98,7 @@ def calculate_intraday_sharpe(
     df = df.sort_values("time").reset_index(drop=True)
 
     cash = float(initial_cash)
-    position_qty = 0
+    initial_position_qty = float(initial_position_qty)
 
     cash_history = []
     position_history = []
@@ -126,16 +127,16 @@ def calculate_intraday_sharpe(
 
         if action == "BUY":
             cash -= qty * execution_price + fee
-            position_qty += qty
+            initial_position_qty += qty
 
         elif action == "SELL":
             cash += qty * execution_price - fee
-            position_qty -= qty
+            initial_position_qty -= qty
 
         cash_history.append(cash)
-        position_history.append(position_qty)
+        position_history.append(initial_position_qty)
         equity_history.append(
-            cash + position_qty * price
+            cash + initial_position_qty * price
         )
 
     df["cash"] = cash_history
@@ -244,7 +245,7 @@ def compute_daily_pl(
         sell_df,
         realized_pl_sum,
         peak_exposure,
-        realized_pl_pct,
+        realized_pl_pct
     )
 
 def get_daily_status(
@@ -289,7 +290,7 @@ def get_daily_status(
     ) * df["qty"]
     
     df["date"] = runtime_settings.market_datetime
-    df["total_assets"] = get_portfolio_equity(trade_ctx, runtime_settings, currency="SGD")
+    df["total_assets"] = get_portfolio_equity(trade_ctx, runtime_settings, currency="USD")
 
     df["calculated_realized_pl_sum"] = realized_pl_sum
     df["calculated_realized_pl_ratio"] = realized_pl_pct
@@ -442,6 +443,7 @@ def save_results(
     output_df, intraday_sharpe = calculate_intraday_sharpe(
         output_df=output_df,
         initial_cash=strategy.initial_equity,
+        initial_position_qty=strategy.initial_position_qty,
         daily_rf=daily_rf,
     )
     output_df.to_csv(trading_logs_path,index=False)     
