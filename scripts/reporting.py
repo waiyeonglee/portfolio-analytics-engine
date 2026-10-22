@@ -34,6 +34,7 @@ def get_risk_free_rates():
     url = (
         "https://fred.stlouisfed.org/graph/"
         "fredgraph.csv?id=DTB3"
+        "&cosd=2026-01-01"
     )
 
     rf = pd.read_csv(url)
@@ -76,6 +77,8 @@ def get_daily_risk_free_rate(trading_date):
             f"No Treasury rate available for {trading_date}"
         )
 
+    print("Daily Risk Free Date:", available["DATE"].iloc[-1].strftime("%Y-%m-%d"))
+    print("Daily Risk Free Rate:", available["daily_rf"].iloc[-1])
     return float(available["daily_rf"].iloc[-1])
 
 def calculate_intraday_sharpe(
@@ -348,7 +351,7 @@ def get_daily_status(
         )
 
     df["pl_difference_pct"] = (
-        df["calculated_pl_sum"].pct_change() * 100
+        df["calculated_pl_sum"].pct_change(fill_method=None) * 100
     )
     
     df["asset_difference"] = (
