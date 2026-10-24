@@ -361,34 +361,62 @@ def initialize_live(
     trade_ctx,
     quote_ctx,
     runtime_settings,
-):
+) -> bool:
     """Initialize live trading."""
 
-    session_date = pd.Timestamp(
-        runtime_settings.market_datetime.date()
+    _, market_key = get_market_config(
+        runtime_settings.symbol
     )
 
-    historical_df = load_historical_candles(
-        quote_ctx,
-        runtime_settings,
-        session_date,
-    )
+    while True:
+        ret, state = quote_ctx.get_global_state()
+        if ret != RET_OK:
+            print(
+                "[QUOTE] get_global_state failed during startup:",
+                state,
+            )
+            time.sleep(60)
+            continue
 
-    # Only use completed candles before current market time.
-    market_now = runtime_settings.market_datetime.tz_localize(None)
+        market_state = state[market_key]
+        if market_state in (
+            "AFTER_HOURS_BEGIN",
+            "CLOSED",
+        ):
+            print(
+                "LIVE INITIALIZATION SKIPPED: Market closed"
+            )
+            return False
 
-    historical_df = historical_df.loc[
-        historical_df["time_key"] < market_now
-    ].copy()
-
-    df_past = historical_df.iloc[
-        -(LONG_WINDOW):
-    ].copy()
-
-    if df_past.empty:
-        raise RuntimeError(
-            "Insufficient candles for live initialization."
+        market_now = pd.Timestamp.now(
+            tz=runtime_settings.market_datetime.tz
         )
+        session_date = pd.Timestamp(market_now.date())
+
+        historical_df = load_historical_candles(
+            quote_ctx,
+            runtime_settings,
+            session_date,
+        )
+
+        # Only use completed candles before current market time.
+        historical_df = historical_df.loc[
+            historical_df["time_key"] < market_now.tz_localize(None)
+        ].copy()
+
+        df_past = historical_df.iloc[
+            -(LONG_WINDOW):
+        ].copy()
+
+        if len(df_past) >= LONG_WINDOW:
+            runtime_settings.market_datetime = market_now
+            break
+
+        print(
+            "Waiting for completed market candles to initialize: "
+            f"{len(df_past)}/{LONG_WINDOW}. Retrying in 60 seconds."
+        )
+        time.sleep(60)
 
     initialize_portfolio(
         strategy=strategy,
@@ -397,11 +425,6 @@ def initialize_live(
         current_price=float(df_past["close"].iloc[-1]),
         mode="live",
     )
-
-    if len(df_past) < LONG_WINDOW:
-        raise RuntimeError(
-            "Insufficient candles for indicator warm-up."
-        )
 
     for _, row in df_past.iterrows():
         strategy.process_candle(
@@ -416,6 +439,7 @@ def initialize_live(
         "Initialized time:",
         df_past["time_key"].iloc[-1],
     )
+    return True
 
 def run_live(
     strategy,
@@ -425,12 +449,13 @@ def run_live(
 ):
     """Initialize and start live trading."""
 
-    initialize_live(
+    if not initialize_live(
         strategy,
         trade_ctx,
         quote_ctx,
         runtime_settings,
-    )
+    ):
+        return
 
     trade_ctx.set_handler(
         OrderHandler(

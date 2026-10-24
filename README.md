@@ -69,8 +69,8 @@ One-time EC2 setup:
    sudo systemctl enable opend moomoo_update moomoo_simulate
    ```
 
-Enable `moomoo_real` only if you intend real trading to start automatically at boot. The updater is a shared oneshot dependency: if its GitHub pull or locked sync fails, the dependent trading services will not start.
+Enable `moomoo_real` only if you intend real trading to start automatically at boot. The updater is a shared oneshot dependency: if its GitHub pull or locked sync fails, the dependent trading services will not start. Live startup exits cleanly when the market is closed, and waits for at least 30 completed one-minute candles when the market is open but the strategy has not warmed up yet.
 
 ## Outputs
 
-The application writes portfolio and trading results to local CSV logs. When a trading service stops, `jobs/end_moomoo.sh` also saves that service's journal and uploads matching logs to the configured S3 bucket.
+The application writes portfolio and trading results to local CSV logs. When a trading service stops, `jobs/end_moomoo.sh` saves that service's journal and the current boot's `moomoo_update` journal, then uploads them and matching environment logs to `s3://moomoos3/logs/`.
