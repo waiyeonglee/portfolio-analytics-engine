@@ -26,3 +26,5 @@ jobs:
       - name: Sync to S3
         run: |
           aws s3 sync scripts/ s3://moomoos3/scripts/
+          aws s3 cp pyproject.toml s3://moomoos3/pyproject.toml
+          aws s3 cp uv.lock s3://moomoos3/uv.lock

@@ -1,0 +1,22 @@
+[project]
+name = "portfolio-analytics-engine"
+version = "0.1.0"
+description = "Portfolio analytics and trading engine"
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    "moomoo-api",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "ta-lib",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel",
+    "jupyter",
+]
+
+[tool.uv]
+package = false

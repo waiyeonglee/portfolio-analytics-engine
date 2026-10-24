@@ -9,18 +9,26 @@ A Python-based portfolio analytics engine that integrates with broker APIs to co
 git clone https://github.com/waiyeonglee/portfolio-analytics-engine.git
 cd portfolio-analytics-engine
 
-pip install -r requirements.txt
-```
-
-Live mode:
-```bash
-python main.py --live
+uv sync
 ```
 
 Backtesting mode:
 ```bash
-python main.py
+uv run python -m scripts.main
 ```
+
+Live mode:
+```bash
+uv run python -m scripts.main --live
+```
+
+For notebook work, include the development dependencies:
+```bash
+uv sync --group dev
+uv run --group dev jupyter lab Moomoo.ipynb
+```
+
+`uv.lock` pins the resolved dependencies. Install `uv` on the EC2 host before using the deployment scripts; the scripts sync the lockfile and run the engine through `uv`.
 
 ## 🚀 Key Features
 
