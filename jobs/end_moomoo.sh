@@ -1,16 +1,31 @@
 #!/bin/bash
+set -euo pipefail
 
-# Directory where your files are
-DIR="/home/ubuntu/moomoo_scripts/logs"
+ENV="$1"
 
-# Get today's date (format must match your file timestamps)
+case "$ENV" in
+    real|simulate) ;;
+    *)
+        echo "Usage: $0 {real|simulate}" >&2
+        exit 2
+        ;;
+esac
+
+DIR="/home/ubuntu/portfolio_analytics_engine/logs"
 today=$(date +%Y-%m-%d)
 
-# Save all logs of the service to a file
-journalctl -u moomoo_simulate -b 0 --no-pager > "$DIR/$today - moomoo_simulate_journal.txt"
-journalctl -u moomoo_real -b 0 --no-pager > "$DIR/$today - moomoo_real_journal.txt"
+SERVICE="moomoo_${ENV}"
 
-# Find files with today's date
-find "$DIR" -type f -name "*$today*" | while IFS= read -r file; do
+mkdir -p "$DIR"
+
+# Export only this service's journal
+journalctl -u "$SERVICE.service" -b 0 --no-pager \
+    > "$DIR/$today - ${SERVICE}_journal.txt"
+
+# Upload only this environment's logs
+find "$DIR" -maxdepth 1 -type f \
+    -name "*$today*${ENV}*" \
+    -print0 |
+while IFS= read -r -d '' file; do
     aws s3 cp "$file" s3://moomoos3/logs/
 done

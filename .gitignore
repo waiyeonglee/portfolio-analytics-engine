@@ -5,6 +5,8 @@ run_main.command
 *.ipynb
 
 # Runtime output
+# EC2-specific systemd units; keep local and out of Git
+service_files/
 logs/
 lightning_logs/
 *.log

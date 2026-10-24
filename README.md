@@ -34,6 +34,8 @@ uv run --group dev jupyter lab Moomoo.ipynb
 
 When EC2 boots, systemd can pull the latest `main` commit from GitHub and sync its locked dependencies before starting either trading service. This works even when the instance was offline during a push. To deploy immediately while EC2 is running, start the **Deploy portfolio engine to EC2** workflow manually from GitHub Actions; it pulls the latest commit and restarts both services.
 
+The directories have separate roles: `jobs/` contains the checked-in scripts that update, start, and stop the application. `service_files/` contains local EC2-specific systemd unit files and is intentionally git-ignored. Keep credentials and machine-specific service configuration there; do not commit it. Copy the required unit files to EC2 separately.
+
 For manual deployments, configure these GitHub Actions repository secrets:
 
 - `EC2_HOST`: EC2's public DNS name or IP address
@@ -42,20 +44,28 @@ For manual deployments, configure these GitHub Actions repository secrets:
 
 One-time EC2 setup:
 
-1. Clone this repository to `/home/ubuntu/moomoo_scripts` and install `uv` at `/home/ubuntu/.local/bin/uv`.
+1. Clone this repository to `/home/ubuntu/portfolio_analytics_engine` and install `uv` at `/home/ubuntu/.local/bin/uv`.
 2. If the repository is private, configure a read-only GitHub deploy key for the `ubuntu` account so `git pull` can access it.
-3. Copy the boot updater and service dependencies into systemd, then enable both trading services:
+3. Securely copy the local unit files from `service_files/` to `/etc/systemd/system/` on EC2. These local-only files are not included in GitHub. Check that the real and simulated units use the checked-in scripts:
+   ```ini
+   # moomoo_real.service
+   WorkingDirectory=/home/ubuntu/portfolio_analytics_engine
+   ExecStart=/bin/bash /home/ubuntu/portfolio_analytics_engine/jobs/start_moomoo_real.sh
+   ExecStopPost=/bin/bash /home/ubuntu/portfolio_analytics_engine/jobs/end_moomoo.sh real
+
+   # moomoo_simulate.service
+   WorkingDirectory=/home/ubuntu/portfolio_analytics_engine
+   ExecStart=/bin/bash /home/ubuntu/portfolio_analytics_engine/jobs/start_moomoo_simulate.sh
+   ExecStopPost=/bin/bash /home/ubuntu/portfolio_analytics_engine/jobs/end_moomoo.sh simulate
+   ```
+   The unit files should require and order after `opend.service` and `moomoo_update.service`. The updater should use `/home/ubuntu/portfolio_analytics_engine` as its working directory and run `jobs/moomoo_update.sh`.
+4. Reload systemd and enable the updater and both trading services:
    ```bash
-   sudo install jobs/moomoo-update.service /etc/systemd/system/moomoo-update.service
-   sudo install -D jobs/systemd/moomoo_real.service.d/override.conf \
-     /etc/systemd/system/moomoo_real.service.d/override.conf
-   sudo install -D jobs/systemd/moomoo_simulate.service.d/override.conf \
-     /etc/systemd/system/moomoo_simulate.service.d/override.conf
    sudo systemctl daemon-reload
-   sudo systemctl enable moomoo_real moomoo_simulate
+   sudo systemctl enable moomoo_update moomoo_real moomoo_simulate
    ```
 
-The updater is a shared oneshot dependency, so GitHub is pulled and `uv sync --locked` runs once before the services start. If the update fails, systemd will not start the trading services. The manual GitHub Actions workflow also requires the `ubuntu` account to be able to run `sudo systemctl restart` for both services without an interactive password.
+The updater is a shared oneshot dependency, so GitHub is pulled and `uv sync --locked` runs once before the trading services start. If the update fails, systemd will not start them. The manual GitHub Actions workflow also requires the `ubuntu` account to be able to run `sudo systemctl restart` for both services without an interactive password.
 
 ## 🚀 Key Features
 
