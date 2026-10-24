@@ -28,7 +28,34 @@ uv sync --group dev
 uv run --group dev jupyter lab Moomoo.ipynb
 ```
 
-`uv.lock` pins the resolved dependencies. Install `uv` on the EC2 host before using the deployment scripts; the scripts sync the lockfile and run the engine through `uv`.
+`uv.lock` pins the resolved dependencies.
+
+## Deploying to EC2
+
+When EC2 boots, systemd can pull the latest `main` commit from GitHub and sync its locked dependencies before starting either trading service. This works even when the instance was offline during a push. To deploy immediately while EC2 is running, start the **Deploy portfolio engine to EC2** workflow manually from GitHub Actions; it pulls the latest commit and restarts both services.
+
+For manual deployments, configure these GitHub Actions repository secrets:
+
+- `EC2_HOST`: EC2's public DNS name or IP address
+- `EC2_SSH_KEY`: private SSH key for the `ubuntu` account
+- `EC2_KNOWN_HOSTS`: verified SSH host-key entry for the EC2 host
+
+One-time EC2 setup:
+
+1. Clone this repository to `/home/ubuntu/moomoo_scripts` and install `uv` at `/home/ubuntu/.local/bin/uv`.
+2. If the repository is private, configure a read-only GitHub deploy key for the `ubuntu` account so `git pull` can access it.
+3. Copy the boot updater and service dependencies into systemd, then enable both trading services:
+   ```bash
+   sudo install jobs/moomoo-update.service /etc/systemd/system/moomoo-update.service
+   sudo install -D jobs/systemd/moomoo_real.service.d/override.conf \
+     /etc/systemd/system/moomoo_real.service.d/override.conf
+   sudo install -D jobs/systemd/moomoo_simulate.service.d/override.conf \
+     /etc/systemd/system/moomoo_simulate.service.d/override.conf
+   sudo systemctl daemon-reload
+   sudo systemctl enable moomoo_real moomoo_simulate
+   ```
+
+The updater is a shared oneshot dependency, so GitHub is pulled and `uv sync --locked` runs once before the services start. If the update fails, systemd will not start the trading services. The manual GitHub Actions workflow also requires the `ubuntu` account to be able to run `sudo systemctl restart` for both services without an interactive password.
 
 ## 🚀 Key Features
 
