@@ -1,7 +1,6 @@
 import os
 import re
 from pathlib import Path
-from moomoo import TrdEnv
 import numpy as np
 import pandas as pd
 
@@ -183,51 +182,126 @@ def calculate_intraday_sharpe(
 def compute_daily_pl(
     output_df,
     price_column,
+    initial_position_qty=0,
+    initial_cost_price=0.0,
 ):
     """Calculate realized daily P/L and peak exposure."""
 
-    sell_df = output_df.loc[
-        output_df["action"] == "SELL"
-    ].copy()
-
-    exposure = 0.0
-    peak_exposure = 0.0
-
-    for _, row in output_df.iterrows():
-
-        if row["action"] == "BUY":
-            exposure += (
-                row[price_column]
-                * row["trade_qty"]
-            )
-
-        elif row["action"] == "SELL":
-            exposure -= (
-                row["cost_price"]
-                * row["trade_qty"]
-            )
-
-        peak_exposure = max(
-            peak_exposure,
-            exposure,
+    requested_qty = pd.to_numeric(
+        output_df.get(
+            "trade_qty",
+            pd.Series(0.0, index=output_df.index),
+        ),
+        errors="coerce",
+    )
+    filled_qty = pd.to_numeric(
+        output_df.get(
+            "filled_qty",
+            pd.Series(index=output_df.index, dtype=float),
+        ),
+        errors="coerce",
+    )
+    if "filled_qty" not in output_df:
+        reported_qty = requested_qty
+    elif "order_id" in output_df:
+        # A submitted order with zero fills must not fall back to requested size.
+        legacy_or_backtest = output_df["order_id"].isna()
+        reported_qty = filled_qty.where(
+            filled_qty > 0,
+            requested_qty.where(legacy_or_backtest, 0),
         )
+    else:
+        reported_qty = filled_qty.where(
+            filled_qty > 0,
+            requested_qty,
+        )
+    reported_qty = reported_qty.fillna(0)
+
+    actions = output_df["action"]
+    prices = pd.to_numeric(
+        output_df.get(
+            price_column,
+            pd.Series(index=output_df.index, dtype=float),
+        ),
+        errors="coerce",
+    ).fillna(0)
+    cost_basis = pd.to_numeric(
+        output_df.get(
+            "cost_price",
+            pd.Series(index=output_df.index, dtype=float),
+        ),
+        errors="coerce",
+    ).fillna(0)
+
+    exposure_change = pd.Series(0.0, index=output_df.index)
+    buy_mask = actions == "BUY"
+    sell_mask = actions == "SELL"
+    exposure_change.loc[buy_mask] = (
+        prices.loc[buy_mask] * reported_qty.loc[buy_mask]
+    )
+    exposure_change.loc[sell_mask] = (
+        -cost_basis.loc[sell_mask] * reported_qty.loc[sell_mask]
+    )
+    starting_exposure = (
+        float(initial_position_qty) * float(initial_cost_price)
+    )
+    peak_exposure = max(
+        starting_exposure,
+        starting_exposure + exposure_change.cumsum().max(),
+    )
 
     print(
         f"Peak Exposure: "
         f"{peak_exposure:.0f}"
     )
 
-    sell_df["realized_pl"] = (
-        (
-            sell_df[price_column]
-            - sell_df["cost_price"]
+    sell_df = output_df.loc[sell_mask].copy()
+    sell_df["reported_qty"] = reported_qty.loc[sell_mask]
+
+    gross_realized = pd.to_numeric(
+        sell_df.get(
+            "realized_pl_gross",
+            pd.Series(index=sell_df.index, dtype=float),
+        ),
+        errors="coerce",
+    )
+    filled_sell_qty = filled_qty.loc[sell_mask].fillna(0)
+    execution_price = pd.to_numeric(
+        sell_df.get(
+            price_column,
+            pd.Series(index=sell_df.index, dtype=float),
+        ),
+        errors="coerce",
+    )
+    sell_cost_basis = cost_basis.loc[sell_mask]
+    fallback_realized = (
+        (execution_price - sell_cost_basis)
+        * sell_df["reported_qty"]
+    )
+    has_fill_level_realized = (
+        gross_realized.notna()
+        & (
+            (filled_sell_qty > 0)
+            | gross_realized.ne(0)
         )
-        * sell_df["trade_qty"]
+    )
+    sell_df["realized_pl_gross"] = gross_realized.where(
+        has_fill_level_realized,
+        fallback_realized,
+    ).fillna(0)
+
+    sell_fees = pd.to_numeric(
+        sell_df.get(
+            "fee_amount",
+            pd.Series(0.0, index=sell_df.index),
+        ),
+        errors="coerce",
+    ).fillna(0)
+    sell_df["realized_pl"] = (
+        sell_df["realized_pl_gross"] - sell_fees
     )
 
-    realized_pl_sum = (
-        sell_df["realized_pl"].sum()
-    )
+    realized_pl_sum = sell_df["realized_pl"].sum()
 
     if peak_exposure > 0:
         realized_pl_pct = (
@@ -255,134 +329,130 @@ def get_daily_status(
     trade_ctx,
     runtime_settings,
     realized_pl_sum,
-    peak_exposure,
-    realized_pl_pct,
-    intraday_sharpe,
-    buy_hold_return,
     logs_folder,
     daily_status_file_name,
 ):
-    """Build daily portfolio status with risk-adjusted metrics."""
+    """Build a concise daily portfolio and P/L report."""
 
     df = get_position_status(
         trade_ctx,
         runtime_settings,
     )
 
-    if runtime_settings.trade_env == TrdEnv.REAL:
-        # REAL: Average cost excludes previously realized P/L.
-        df["cost_basis_type"] = "average_cost"
-
-        df["final_cost_price"] = pd.to_numeric(
-            df["average_cost"],
-            errors="coerce",
-        )
-
-    else:
-        # SIMULATE: Diluted cost may incorporate previous realized P/L.
-        df["cost_basis_type"] = "diluted_cost"
-
-        df["final_cost_price"] = pd.to_numeric(
-            df["cost_price"],
-            errors="coerce",
-        )
-
-    # Calculate position P/L using the selected cost basis.
+    cost_basis = pd.to_numeric(df["average_cost"], errors="coerce")
     df["position_pl_sum"] = (
-        df["nominal_price"] - df["final_cost_price"]
-    ) * df["qty"]
-    
+        pd.to_numeric(df["nominal_price"], errors="coerce") - cost_basis
+    ) * pd.to_numeric(df["qty"], errors="coerce")
+
     df["date"] = runtime_settings.market_datetime
-    df["total_assets"] = get_portfolio_equity(trade_ctx, runtime_settings, currency="USD")
-
-    df["calculated_realized_pl_sum"] = realized_pl_sum
-    df["calculated_realized_pl_ratio"] = realized_pl_pct
-    df["calculated_peak_exposure"] = peak_exposure
-
-    # Sharpe ratio
-    df["intraday_sharpe"] = intraday_sharpe
-    # Buy-and-hold return
-    df["buy_hold_return"] = buy_hold_return
-    
-    # Load previous daily status
-    files = list(
-        Path(logs_folder).glob(
-            f"*{daily_status_file_name}"
-        )
+    df["total_assets"] = get_portfolio_equity(
+        trade_ctx,
+        runtime_settings,
+        currency="USD",
     )
 
-    if files:
+    # Load prior snapshots so cumulative values survive restarts.
+    files = Path(logs_folder).glob(f"*{daily_status_file_name}")
+    previous_status = pd.DataFrame()
+    snapshots = []
+    for path in files:
+        snapshot = pd.read_csv(path)
+        if not snapshot.empty and "date" in snapshot:
+            snapshot["_snapshot_order"] = path.stat().st_mtime
+            snapshots.append(snapshot)
 
-        def extract_date(path):
-            match = re.search(
-                r"\d{4}-\d{2}-\d{2}",
-                path.name,
-            )
-            return (
-                pd.Timestamp(match.group())
-                if match
-                else pd.Timestamp.min
-            )
-
-        prev_file = max(files, key=extract_date)
-
-        if extract_date(prev_file).date() != pd.Timestamp.today().date():
-            print("Previous file:", prev_file)
-
-            df = pd.concat(
-                [pd.read_csv(prev_file), df],
-                ignore_index=True,
-            )
-
-    # Calculate daily P/L based on the cost basis used by Moomoo.
-    if runtime_settings.trade_env == TrdEnv.REAL:
-        # Average cost excludes previously realized P/L.
-        # Daily P/L = today's realized P/L + change in unrealized P/L.
-        df["calculated_pl_sum"] = (
-            df["calculated_realized_pl_sum"]
-            + df["position_pl_sum"].diff()
+    if snapshots:
+        previous_status = pd.concat(snapshots, ignore_index=True)
+        previous_status["_date_key"] = pd.to_datetime(
+            previous_status["date"].astype(str).str.slice(0, 10),
+            errors="coerce",
+        ).dt.date
+        previous_status = (
+            previous_status
+            .dropna(subset=["_date_key"])
+            .sort_values("_snapshot_order")
+            .drop_duplicates("_date_key", keep="last")
         )
+
+    current_date = pd.Timestamp(df["date"].iloc[0]).date()
+    if previous_status.empty:
+        prior_days = same_day = previous_status
     else:
-        # Diluted cost incorporates previous realized gains/losses.
-        # Daily P/L is estimated from the change in diluted-cost P/L.
-        # This may not capture P/L correctly when positions are fully closed.
-        df["calculated_pl_sum"] = (
-            df["position_pl_sum"].diff()
+        prior_days = previous_status.loc[
+            previous_status["_date_key"] < current_date
+        ].copy()
+        same_day = previous_status.loc[
+            previous_status["_date_key"] == current_date
+        ]
+
+    prior_realized = pd.to_numeric(
+        same_day.get(
+            "daily_realized_pl_sum",
+            pd.Series(index=same_day.index, dtype=float),
+        ),
+        errors="coerce",
+    ).fillna(
+        pd.to_numeric(
+            same_day.get(
+                "calculated_realized_pl_sum",
+                pd.Series(0.0, index=same_day.index),
+            ),
+            errors="coerce",
         )
+    ).fillna(0).sum()
+    df["daily_realized_pl_sum"] = prior_realized + realized_pl_sum
 
-    df["pl_difference_pct"] = (
-        df["calculated_pl_sum"].pct_change(fill_method=None) * 100
+    df = pd.concat(
+        [prior_days, df],
+        ignore_index=True,
+        sort=False,
     )
-    
-    df["asset_difference"] = (
-        df["total_assets"].diff()
-    )
+    df["date"] = pd.to_datetime(
+        df["date"].astype(str).str.slice(0, 10),
+        errors="coerce",
+    ).dt.date
+    df = df.sort_values("date").reset_index(drop=True)
 
-    df["asset_difference_pct"] = (
-        df["total_assets"].pct_change() * 100
+    for column, legacy_column in (
+        ("daily_realized_pl_sum", "calculated_realized_pl_sum"),
+        ("unrealized_pl_sum", "position_pl_sum"),
+    ):
+        current_values = pd.to_numeric(
+            df.get(column, pd.Series(index=df.index, dtype=float)),
+            errors="coerce",
+        )
+        legacy_values = pd.to_numeric(
+            df.get(legacy_column, pd.Series(index=df.index, dtype=float)),
+            errors="coerce",
+        )
+        df[column] = current_values.fillna(legacy_values)
+
+    df["daily_unrealized_pl_change"] = (
+        df["unrealized_pl_sum"].diff()
     )
-    
+    df["daily_total_pl_sum"] = (
+        df["daily_realized_pl_sum"]
+        + df["daily_unrealized_pl_change"]
+    )
+    df["asset_change"] = pd.to_numeric(
+        df["total_assets"],
+        errors="coerce",
+    ).diff()
     df["reconciliation_difference"] = (
-        df["asset_difference"]
-        - df["calculated_pl_sum"]
+        df["asset_change"] - df["daily_total_pl_sum"]
     )
-    
+
     output_columns = [
         "date",
         "code",
         "qty",
-        "cost_basis_type",
-        "final_cost_price",
         "total_assets",
-        "calculated_realized_pl_sum",
-        "position_pl_sum",
-        "calculated_pl_sum",
-        "pl_difference_pct",
-        "asset_difference",
-        "asset_difference_pct",
+        "daily_realized_pl_sum",
+        "unrealized_pl_sum",
+        "daily_unrealized_pl_change",
+        "daily_total_pl_sum",
+        "asset_change",
         "reconciliation_difference",
-        "intraday_sharpe",
-        "buy_hold_return",
     ]
 
     return df[output_columns]
@@ -461,6 +531,8 @@ def save_results(
     ) = compute_daily_pl(
         output_df,
         price_column,
+        initial_position_qty=strategy.initial_position_qty,
+        initial_cost_price=strategy.initial_cost_price,
     )
 
     sell_df.to_csv(
@@ -472,10 +544,6 @@ def save_results(
         trade_ctx=trade_ctx,
         runtime_settings=runtime_settings,
         realized_pl_sum=realized_pl_sum,
-        peak_exposure=peak_exposure,
-        realized_pl_pct=realized_pl_pct,
-        intraday_sharpe=intraday_sharpe,
-        buy_hold_return=buy_hold_return,
         logs_folder=logs_folder,
         daily_status_file_name=(
             daily_status_file_name

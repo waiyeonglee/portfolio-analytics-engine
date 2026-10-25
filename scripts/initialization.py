@@ -60,6 +60,7 @@ def initialize_portfolio(
         strategy.cash = float(initial_cash)
 
         strategy.initial_position_qty = 0
+        strategy.initial_cost_price = 0.0
         strategy.position_qty = 0
         strategy.cost_price = 0.0
 
@@ -99,6 +100,7 @@ def initialize_portfolio(
                 errors="coerce",
             ).iloc[0]
         )
+        strategy.initial_cost_price = strategy.cost_price
 
         (
             strategy.max_cash_buy,

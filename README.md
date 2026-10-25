@@ -74,3 +74,14 @@ Enable `moomoo_real` only if you intend real trading to start automatically at b
 ## Outputs
 
 The application writes portfolio and trading results to local CSV logs. When a trading service stops, `jobs/end_moomoo.sh` saves that service's journal and the current boot's `moomoo_update` journal, then uploads them and matching environment logs to `s3://moomoos3/logs/`.
+
+The daily status CSV keeps the P/L view concise:
+
+- `daily_realized_pl_sum`: realized P/L for the market date, net of sell-order fees. Same-day service restarts carry forward earlier realized P/L.
+- `unrealized_pl_sum`: current P/L on the open position; it is a snapshot, not a sum across dates.
+- `daily_unrealized_pl_change`: change in unrealized P/L since the prior market-date snapshot.
+- `daily_total_pl_sum`: daily realized P/L plus the daily change in unrealized P/L.
+- `asset_change`: change in total assets since the prior market-date snapshot.
+- `reconciliation_difference`: `asset_change - daily_total_pl_sum`; zero means the reported P/L components match the account asset change.
+
+The first recorded date has no prior snapshot, so daily unrealized change, daily total, asset change, and reconciliation are blank for that row. Unrealized P/L uses Moomoo average cost, keeping realized P/L separate for both real and simulated environments. Live realized P/L uses the actual price and quantity of every fill, including partial fills, and deducts the completed order's fee once. Differences from account asset changes can still occur due to cash flows, other holdings, or fees not included in the trade records.

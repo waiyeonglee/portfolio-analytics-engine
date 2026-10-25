@@ -91,6 +91,7 @@ class MovingAverageStrategy:
         self.initial_equity = None
         self.cash = None
         self.initial_position_qty = 0
+        self.initial_cost_price = 0.0
         
     def process_candle(
         self,
@@ -460,6 +461,9 @@ class MovingAverageStrategy:
             # Execution
             "execution_time": pd.NaT,
             "execution_price": np.nan,
+            "filled_qty": 0,
+            "filled_notional": 0.0,
+            "realized_pl_gross": 0.0,
 
             # Fees
             "fee_amount": 0.0,

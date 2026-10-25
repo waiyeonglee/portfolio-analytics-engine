@@ -153,7 +153,10 @@ class OrderHandler(TradeOrderHandlerBase):
         if order_status in terminal_statuses:
             self.strategy.pending_order = False
 
-        if order_status != "FILLED_ALL":
+        if order_status not in {
+            "FILLED_ALL",
+            "CANCELLED_ALL",
+        }:
             return (RET_OK, data)
 
         for record in self.strategy.output:
@@ -162,6 +165,9 @@ class OrderHandler(TradeOrderHandlerBase):
                 continue
 
             record["order_status"] = order_status
+
+            if int(data["dealt_qty"].iloc[0]) <= 0:
+                break
 
             if self.runtime_settings.trade_env == TrdEnv.REAL:
                 ret2, order_fee = (
@@ -228,6 +234,7 @@ class OrderHandler(TradeOrderHandlerBase):
         cost_price_before,
     ):
         action = data["trd_side"].iloc[0]
+        filled_qty = int(data["dealt_qty"].iloc[0])
 
         record["cost_price"] = (
             cost_price_before
@@ -244,6 +251,12 @@ class OrderHandler(TradeOrderHandlerBase):
         )
 
         record["execution_price"] = current_price
+        record["filled_qty"] = filled_qty
+        record["filled_notional"] = current_price * filled_qty
+        if action == "SELL":
+            record["realized_pl_gross"] = (
+                current_price - cost_price_before
+            ) * filled_qty
 
         record["realized_pl_pct"] = (
             self.strategy.realized_pl_pct
@@ -256,7 +269,7 @@ class OrderHandler(TradeOrderHandlerBase):
         )
 
         record["trade_qty"] = (
-            self.strategy.trade_qty
+            filled_qty
         )
 
         record["Position Qty"] = (
@@ -305,6 +318,13 @@ class DealHandler(TradeDealHandlerBase):
             action = deal["trd_side"]
             fill_price = float(deal["price"])
             fill_qty = int(deal["qty"])
+            cost_price_before = self.strategy.cost_price
+
+            if action == "SELL":
+                record["realized_pl_gross"] = (
+                    record.get("realized_pl_gross", 0.0)
+                    + (fill_price - cost_price_before) * fill_qty
+                )
 
             self.strategy.apply_fill(
                 action=action,
@@ -324,7 +344,24 @@ class DealHandler(TradeDealHandlerBase):
                 deal["create_time"]
             )
 
-            record["execution_price"] = fill_price
+            previous_notional = record.get(
+                "filled_notional",
+                0.0,
+            )
+            previous_filled = record.get(
+                "filled_qty",
+                0,
+            )
+            filled_notional = (
+                previous_notional + fill_price * fill_qty
+            )
+            filled_qty = previous_filled + fill_qty
+
+            record["filled_notional"] = filled_notional
+            record["filled_qty"] = filled_qty
+            record["execution_price"] = (
+                filled_notional / filled_qty
+            )
 
             record["realized_pl_pct"] = (
                 self.strategy.realized_pl_pct
@@ -336,15 +373,12 @@ class DealHandler(TradeDealHandlerBase):
                 else "CLOSED"
             )
 
-            # Accumulate actual filled quantity.
-            previous_filled = record.get(
-                "filled_qty",
-                0,
+            record["trade_qty"] = filled_qty
+            record["Position Qty"] = (
+                self.strategy.position_qty
             )
-
-            record["filled_qty"] = (
-                previous_filled + fill_qty
-            )
+            if action == "SELL":
+                record["cost_price"] = cost_price_before
 
             print(
                 f"{self.runtime_settings.symbol} | "
