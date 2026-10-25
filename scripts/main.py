@@ -1,4 +1,5 @@
 import argparse
+
 import pandas as pd
 
 from .backtest import run_backtest
@@ -7,6 +8,7 @@ from .live_trading import run_live
 from .reporting import save_results
 from .runtime import create_runtime
 from .strategy import MovingAverageStrategy
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -46,9 +48,7 @@ def main():
     try:
         quote_ctx, trade_ctx, lot_size = create_contexts(runtime_settings)
 
-        strategy = MovingAverageStrategy(
-            lot_size=lot_size
-        )
+        strategy = MovingAverageStrategy(lot_size=lot_size)
 
         if runtime_settings.live_mode:
             run_live(
@@ -69,11 +69,7 @@ def main():
         print("Stopped by user.")
 
     finally:
-        if (
-            strategy is not None
-            and strategy.output
-            and trade_ctx is not None
-        ):
+        if strategy is not None and strategy.output and trade_ctx is not None:
             save_results(
                 strategy,
                 trade_ctx,

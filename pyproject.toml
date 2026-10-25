@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10,<3.15"
 dependencies = [
     "moomoo-api",
+    "matplotlib",
     "numpy",
     "pandas",
     "scikit-learn",

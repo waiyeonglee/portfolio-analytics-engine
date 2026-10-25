@@ -1,34 +1,28 @@
 import time
-import pandas as pd
 
+import pandas as pd
 from moomoo import (
     RET_ERROR,
     RET_OK,
     CurKlineHandlerBase,
     OrderType,
     SubType,
-    TradeDealHandlerBase,
     TradeOrderHandlerBase,
     TrdEnv,
     TrdSide,
-)
-
-from .initialization import (
-    load_historical_candles,
-    initialize_portfolio
 )
 
 from .broker import (
     get_available_qty,
     get_market_config,
     get_market_trend_live,
-    place_order
+    place_order,
 )
-
+from .initialization import initialize_portfolio, load_historical_candles
 from .strategy import LONG_WINDOW
 
-class KlineHandler(CurKlineHandlerBase):
 
+class KlineHandler(CurKlineHandlerBase):
     def __init__(self, strategy, quote_ctx, trade_ctx, runtime_settings):
         super().__init__()
 
@@ -49,16 +43,13 @@ class KlineHandler(CurKlineHandlerBase):
             return RET_OK, data
 
         current_candle = data.iloc[-1]
-    
+
         # Wait until the first candle is completed
         if self.prev_candle is None:
             self.prev_candle = current_candle
             return RET_OK, data
 
-        if (
-            current_candle["time_key"]
-            == self.prev_candle["time_key"]
-        ):
+        if current_candle["time_key"] == self.prev_candle["time_key"]:
             return RET_OK, data
 
         candle = self.prev_candle
@@ -71,12 +62,10 @@ class KlineHandler(CurKlineHandlerBase):
             self.runtime_settings,
         )
 
-        max_cash_buy, max_position_sell = (
-            get_available_qty(
-                self.trade_ctx,
-                self.runtime_settings,
-                current_price,
-            )
+        max_cash_buy, max_position_sell = get_available_qty(
+            self.trade_ctx,
+            self.runtime_settings,
+            current_price,
         )
 
         # Shared strategy pipeline
@@ -93,33 +82,37 @@ class KlineHandler(CurKlineHandlerBase):
     def execute_order(self, action, qty, price):
         """Submit a live Moomoo order."""
 
+        # an order is already pending, do not submit a new one
         if self.strategy.pending_order:
             return False, None
 
-        side = (
-            TrdSide.BUY
-            if action == "BUY"
-            else TrdSide.SELL
-        )
+        side = TrdSide.BUY if action == "BUY" else TrdSide.SELL
 
-        order_data = place_order(
-            trade_ctx=self.trade_ctx,
-            runtime_settings=self.runtime_settings,
-            price=price,
-            qty=qty,
-            side=side,
-            order_type=OrderType.MARKET,
-        )
+        # Mark the order as pending before placing it to prevent duplicate submissions
+        self.strategy.pending_order = True
+        try:
+            order_data = place_order(
+                trade_ctx=self.trade_ctx,
+                runtime_settings=self.runtime_settings,
+                price=price,
+                qty=qty,
+                side=side,
+                order_type=OrderType.MARKET,
+            )
+        except Exception:
+            # assume order submission failed, reset pending_order to allow future orders
+            self.strategy.pending_order = False
+            raise
 
         if order_data is None:
+            # order submission failed, reset pending_order to allow future orders
+            self.strategy.pending_order = False
             return False, None
-
-        self.strategy.pending_order = True
 
         return True, order_data
 
-class OrderHandler(TradeOrderHandlerBase):
 
+class OrderHandler(TradeOrderHandlerBase):
     def __init__(self, strategy, trade_ctx, runtime_settings):
         super().__init__()
 
@@ -145,83 +138,87 @@ class OrderHandler(TradeOrderHandlerBase):
         order_status = data["order_status"].iloc[0]
 
         terminal_statuses = {
-            "FILLED_ALL",
-            "CANCELLED_ALL",
+            "SUBMIT_FAILED",
             "FAILED",
-        }
-
-        if order_status in terminal_statuses:
-            self.strategy.pending_order = False
-
-        if order_status not in {
+            "DISABLED",
+            "DELETED",          
             "FILLED_ALL",
-            "CANCELLED_ALL",
-        }:
+            "CANCELLED_PART",
+            "CANCELLED_ALL"
+        }
+        if order_status not in terminal_statuses:
+            # Keep the order pending while its status is nonterminal.
             return (RET_OK, data)
 
-        for record in self.strategy.output:
+        self.strategy.pending_order = False
 
+        for record in self.strategy.output:
             if record["order_id"] != order_id:
                 continue
 
             record["order_status"] = order_status
+            cumulative_qty = int(data["dealt_qty"].iloc[0])
+            cumulative_price = float(data["dealt_avg_price"].iloc[0])
 
-            if int(data["dealt_qty"].iloc[0]) <= 0:
+            # if there is no dealt_qty, skip
+            if cumulative_qty <= 0 or order_status in {
+                "SUBMIT_FAILED",
+                "FAILED",
+            }:
                 break
+
+            # account for partial fills, 
+            # else can always assume previous_qty = 0
+            previous_qty = int(record.get("trade_qty", 0) or 0)
+            additional_qty = cumulative_qty - previous_qty
+            if additional_qty < 0:
+                print(
+                    f"❌ Order callback error: dealt quantity decreased "
+                    f"for order {order_id} ({previous_qty} to {cumulative_qty})"
+                )
+                return (RET_ERROR, data)
+            elif additional_qty > 0:
+                previous_notional = (
+                    float(record["execution_price"]) * previous_qty
+                    if previous_qty
+                    else 0.0
+                )
+                # previous_notional = 0 for filled_all
+                # cumulative_qty = additional_qty for filled_all
+                # additional_price = cumulative_price for filled_all
+                additional_price = (
+                    cumulative_price * cumulative_qty - previous_notional
+                ) / additional_qty
+                action = data["trd_side"].iloc[0]
+                cost_price_before = self.strategy.cost_price
+
+                # Update trade_qty, total_price, position_qty, cost_price, position_open
+                self.strategy.apply_fill(
+                    action=action,
+                    price=additional_price,
+                    qty=additional_qty,
+                )
+
+                self._update_record(
+                    record,
+                    data,
+                    cost_price_before,
+                    cumulative_qty,
+                    cumulative_price,
+                    additional_qty,
+                    additional_price,
+                )
 
             if self.runtime_settings.trade_env == TrdEnv.REAL:
-                ret2, order_fee = (
-                    self.trade_ctx.order_fee_query(
-                        [order_id]
-                    )
-                )
-
-                if ret2 != RET_OK:
-                    print(
-                        "❌ Order Fee error:",
-                        order_fee,
-                    )
+                ret, order_fee = self.trade_ctx.order_fee_query([order_id])
+                if ret != RET_OK:
+                    print("❌ Order Fee error:", order_fee)
                     return (RET_ERROR, order_fee)
 
-                record["fee_amount"] = (
-                    order_fee["fee_amount"].iloc[0]
-                )
-
-                record["fee_details"] = (
-                    order_fee["fee_details"].iloc[0]
-                )
-
-                # Real fills are handled by DealHandler.
+                record["fee_amount"] = order_fee["fee_amount"].iloc[0]
+                record["fee_details"] = order_fee["fee_details"].iloc[0]
                 break
 
-            action = data["trd_side"].iloc[0]
-
-            current_price = float(
-                data["dealt_avg_price"].iloc[0]
-            )
-
-            filled_qty = int(
-                data["dealt_qty"].iloc[0]
-            )
-
-            cost_price_before = (
-                self.strategy.cost_price
-            )
-
-            self.strategy.apply_fill(
-                action=action,
-                price=current_price,
-                qty=filled_qty,
-            )
-
-            self._update_record(
-                record,
-                data,
-                current_price,
-                cost_price_before,
-            )
-
-            self.strategy.pending_order = False
             break
 
         return (RET_OK, data)
@@ -230,165 +227,45 @@ class OrderHandler(TradeOrderHandlerBase):
         self,
         record,
         data,
-        current_price,
         cost_price_before,
+        cumulative_qty,
+        cumulative_price,
+        additional_qty,
+        additional_price,
     ):
+        
         action = data["trd_side"].iloc[0]
-        filled_qty = int(data["dealt_qty"].iloc[0])
 
-        record["cost_price"] = (
-            cost_price_before
-            if action == "SELL"
-            else self.strategy.cost_price
-        )
+        # data['dealt_qty'] if filled_all
+        record["trade_qty"] = cumulative_qty
+        # data['dealt_avg_price'] if filled_all
+        record["execution_price"] = cumulative_price
+        record["execution_time"] = data["updated_time"].iloc[0]
+        
+        # Note: trade_qty, total_price, position_qty, cost_price, position_open updated in self.strategy.apply_fill()
+        record["total_price"] = self.strategy.total_price
 
-        record["total_price"] = (
-            self.strategy.total_price
-        )
-
-        record["execution_time"] = (
-            data["updated_time"].iloc[0]
-        )
-
-        record["execution_price"] = current_price
-        record["filled_qty"] = filled_qty
-        record["filled_notional"] = current_price * filled_qty
         if action == "SELL":
-            record["realized_pl_gross"] = (
-                current_price - cost_price_before
-            ) * filled_qty
+            # additional_price = cumulative_price = dealt_avg_price for filled_all
+            # additional_qty = cumulative_qty = dealt_qty = trade_qtyfor filled_all
+            record["realized_pl_gross"] += (
+                additional_price - cost_price_before
+            ) * additional_qty
+            record["cost_price"] = cost_price_before
 
-        record["realized_pl_pct"] = (
-            self.strategy.realized_pl_pct
-        )
+        elif action == "BUY":
+            record["cost_price"] = self.strategy.cost_price
 
-        record["Position"] = (
-            "OPEN"
-            if self.strategy.position_open
-            else "CLOSED"
-        )
-
-        record["trade_qty"] = (
-            filled_qty
-        )
-
-        record["Position Qty"] = (
-            self.strategy.position_qty
-        )
+        record["Position"] = "OPEN" if self.strategy.position_open else "CLOSED"
+        record["Position Qty"] = self.strategy.position_qty
 
         print(
             f"{self.runtime_settings.symbol} | "
-            f"Price: {current_price:.2f} | "
+            f"Price: {record['execution_price']:.2f} | "
             f"Action: {action} | "
             f"Time: {record['execution_time']}"
         )
 
-class DealHandler(TradeDealHandlerBase):
-
-    def __init__(self, strategy, trade_ctx, runtime_settings):
-        super().__init__()
-
-        self.strategy = strategy
-        self.trade_ctx = trade_ctx
-        self.runtime_settings = runtime_settings
-
-    def on_recv_rsp(self, rsp_pb):
-        ret, data = super().on_recv_rsp(rsp_pb)
-
-        if ret != RET_OK:
-            print("❌ Deal callback error:", data)
-            return (RET_ERROR, data)
-
-        # A callback can contain more than one deal.
-        for _, deal in data.iterrows():
-
-            order_id = deal["order_id"]
-
-            record = next(
-                (
-                    r for r in self.strategy.output
-                    if r["order_id"] == order_id
-                ),
-                None,
-            )
-
-            if record is None:
-                continue
-
-            action = deal["trd_side"]
-            fill_price = float(deal["price"])
-            fill_qty = int(deal["qty"])
-            cost_price_before = self.strategy.cost_price
-
-            if action == "SELL":
-                record["realized_pl_gross"] = (
-                    record.get("realized_pl_gross", 0.0)
-                    + (fill_price - cost_price_before) * fill_qty
-                )
-
-            self.strategy.apply_fill(
-                action=action,
-                price=fill_price,
-                qty=fill_qty
-            )
-
-            record["cost_price"] = (
-                self.strategy.cost_price
-            )
-
-            record["total_price"] = (
-                self.strategy.total_price
-            )
-
-            record["execution_time"] = (
-                deal["create_time"]
-            )
-
-            previous_notional = record.get(
-                "filled_notional",
-                0.0,
-            )
-            previous_filled = record.get(
-                "filled_qty",
-                0,
-            )
-            filled_notional = (
-                previous_notional + fill_price * fill_qty
-            )
-            filled_qty = previous_filled + fill_qty
-
-            record["filled_notional"] = filled_notional
-            record["filled_qty"] = filled_qty
-            record["execution_price"] = (
-                filled_notional / filled_qty
-            )
-
-            record["realized_pl_pct"] = (
-                self.strategy.realized_pl_pct
-            )
-
-            record["Position"] = (
-                "OPEN"
-                if self.strategy.position_open
-                else "CLOSED"
-            )
-
-            record["trade_qty"] = filled_qty
-            record["Position Qty"] = (
-                self.strategy.position_qty
-            )
-            if action == "SELL":
-                record["cost_price"] = cost_price_before
-
-            print(
-                f"{self.runtime_settings.symbol} | "
-                f"Fill: {fill_qty} | "
-                f"Price: {fill_price:.2f} | "
-                f"Action: {action} | "
-                f"Filled: {record['filled_qty']}"
-            )
-
-        return (RET_OK, data)
 
 def initialize_live(
     strategy,
@@ -398,9 +275,7 @@ def initialize_live(
 ) -> bool:
     """Initialize live trading."""
 
-    _, market_key = get_market_config(
-        runtime_settings.symbol
-    )
+    _, market_key = get_market_config(runtime_settings.symbol)
 
     while True:
         ret, state = quote_ctx.get_global_state()
@@ -417,14 +292,10 @@ def initialize_live(
             "AFTER_HOURS_BEGIN",
             "CLOSED",
         ):
-            print(
-                "LIVE INITIALIZATION SKIPPED: Market closed"
-            )
+            print("LIVE INITIALIZATION SKIPPED: Market closed")
             return False
 
-        market_now = pd.Timestamp.now(
-            tz=runtime_settings.market_datetime.tz
-        )
+        market_now = pd.Timestamp.now(tz=runtime_settings.market_datetime.tz)
         session_date = pd.Timestamp(market_now.date())
 
         historical_df = load_historical_candles(
@@ -438,9 +309,7 @@ def initialize_live(
             historical_df["time_key"] < market_now.tz_localize(None)
         ].copy()
 
-        df_past = historical_df.iloc[
-            -(LONG_WINDOW):
-        ].copy()
+        df_past = historical_df.iloc[-(LONG_WINDOW):].copy()
 
         if len(df_past) >= LONG_WINDOW:
             runtime_settings.market_datetime = market_now
@@ -475,6 +344,7 @@ def initialize_live(
     )
     return True
 
+
 def run_live(
     strategy,
     quote_ctx,
@@ -508,15 +378,6 @@ def run_live(
         )
     )
 
-    if runtime_settings.trade_env == TrdEnv.REAL:
-        trade_ctx.set_handler(
-            DealHandler(
-                strategy,
-                trade_ctx,
-                runtime_settings,
-            )
-        )
-
     ret, data = quote_ctx.subscribe(
         [runtime_settings.symbol],
         [SubType.K_1M],
@@ -524,25 +385,16 @@ def run_live(
     )
 
     if ret != RET_OK:
-        raise RuntimeError(
-            f"Subscription failed: {data}"
-        )
+        raise RuntimeError(f"Subscription failed: {data}")
 
-    _, market_key = get_market_config(
-        runtime_settings.symbol
-    )
+    _, market_key = get_market_config(runtime_settings.symbol)
 
-    print(
-        "🚀 Started LIVE TRADING "
-        f"in environment: {runtime_settings.trade_env}"
-    )
+    print(f"🚀 Started LIVE TRADING in environment: {runtime_settings.trade_env}")
 
     print("Press Ctrl+C to exit.")
 
     while True:
-        ret, state = (
-            quote_ctx.get_global_state()
-        )
+        ret, state = quote_ctx.get_global_state()
 
         if ret != RET_OK:
             print(
@@ -558,9 +410,7 @@ def run_live(
             "AFTER_HOURS_BEGIN",
             "CLOSED",
         ):
-            print(
-                "LOOP EXITED: Market closed"
-            )
+            print("LOOP EXITED: Market closed")
             return
 
         time.sleep(1)

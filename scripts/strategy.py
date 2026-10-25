@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import talib
+
 from .prediction import predict_ridge
 
 # ============================================================
@@ -31,6 +32,7 @@ FEATURES = [
     "pct_diff",
 ]
 
+
 def round_down_to_lot(qty, lot_size):
     """Round quantity down to the nearest valid lot size."""
 
@@ -39,8 +41,8 @@ def round_down_to_lot(qty, lot_size):
 
     return (int(qty) // lot_size) * lot_size
 
-class MovingAverageStrategy:
 
+class MovingAverageStrategy:
     def __init__(self, lot_size=1):
         self.lot_size = int(lot_size)
 
@@ -84,15 +86,14 @@ class MovingAverageStrategy:
 
         # Current trade
         self.trade_qty = 0
+        self.realized_pl_gross = 0.0
         self.unrealized_pl_pct = 0.0
-        self.realized_pl_pct = 0.0
         self.pending_order = False
 
         self.initial_equity = None
         self.cash = None
-        self.initial_position_qty = 0
         self.initial_cost_price = 0.0
-        
+
     def process_candle(
         self,
         row,
@@ -110,21 +111,12 @@ class MovingAverageStrategy:
         )
         current_price = self.prices[-1]
         self.ridge_forecast_return = np.nan
-
-        self.market_trend = (
-            market_trend
-            if market_trend is not None
-            else 0.0
-        )
-
+        self.trade_qty = 0
+        self.realized_pl_gross = 0.0
+        self.market_trend = market_trend if market_trend is not None else 0.0
         self.max_cash_buy = int(max_cash_buy)
         self.max_position_sell = int(max_position_sell)
-
-        self.unrealized_pl_pct = self.compute_pl(
-            current_price
-        )
-
-        self.reset_trade_state()
+        self.unrealized_pl_pct = self.compute_pl(current_price)
 
         # Warm-up: update indicators only, no trading
         if init:
@@ -134,25 +126,27 @@ class MovingAverageStrategy:
                 order_data=None,
             )
             return "INITIALIZING"
-        else:
-            self.ridge_forecast_return = predict_ridge(
-                previous_output=self.output,
-                current_row={
-                    "time": row["time_key"],
-                    "close": current_price,
-                    "RSI": self.rsi,
-                    "MACD": self.macd,
-                    "MACD Histogram": self.macd_histogram,
-                    "short_sma": self.short_sma,
-                    "long_sma": self.long_sma,
-                    "market_trend": self.market_trend,
-                    "pct_diff": self.pct_diff
-                },
-                long_window=LONG_WINDOW,
-                features=FEATURES,
-                alpha=1.0,
-            )
-            print(f"Time: {row['time_key']}, Close: {current_price:.2f}, Forecast Return: {self.ridge_forecast_return:.4f}")
+
+        self.ridge_forecast_return = predict_ridge(
+            previous_output=self.output,
+            current_row={
+                "time": row["time_key"],
+                "close": current_price,
+                "RSI": self.rsi,
+                "MACD": self.macd,
+                "MACD Histogram": self.macd_histogram,
+                "short_sma": self.short_sma,
+                "long_sma": self.long_sma,
+                "market_trend": self.market_trend,
+                "pct_diff": self.pct_diff,
+            },
+            long_window=LONG_WINDOW,
+            features=FEATURES,
+            alpha=1.0,
+        )
+        print(
+            f"Time: {row['time_key']}, Close: {current_price:.2f}, Forecast Return: {self.ridge_forecast_return:.4f}"
+        )
 
         # Generate trading signal
         action, buy_qty, sell_qty = self.buy_or_sell()
@@ -169,9 +163,7 @@ class MovingAverageStrategy:
                 action = "HOLD"
 
             elif execute_order is None:
-                raise ValueError(
-                    "execute_order is required for trading."
-                )
+                raise ValueError("execute_order is required for trading.")
 
             else:
                 success, order_data = execute_order(
@@ -184,7 +176,7 @@ class MovingAverageStrategy:
                     action = "HOLD"
 
         if action == "HOLD":
-            self.reset_trade_state()
+            self.trade_qty = 0
 
         self.save_output(
             row,
@@ -202,7 +194,8 @@ class MovingAverageStrategy:
 
         self.pct_diff = (
             (price - previous) / previous * 100
-            if previous is not None and previous != 0 else 0.0
+            if previous is not None and previous != 0
+            else 0.0
         )
         self.cum_sum_pct += self.pct_diff
 
@@ -217,7 +210,7 @@ class MovingAverageStrategy:
             self.long_sma = 0.0
 
         if len(self.prices) >= RSI_PERIOD + 1:
-            recent = np.asarray(self.prices[-(RSI_PERIOD + 1):], dtype=float)
+            recent = np.asarray(self.prices[-(RSI_PERIOD + 1) :], dtype=float)
             self.rsi = float(talib.RSI(recent, timeperiod=RSI_PERIOD)[-1])
         else:
             self.rsi = 0.0
@@ -253,11 +246,7 @@ class MovingAverageStrategy:
         if self.cost_price <= 0:
             return 0.0
 
-        return (
-            (float(current_price) - self.cost_price)
-            / self.cost_price
-            * 100
-        )
+        return (float(current_price) - self.cost_price) / self.cost_price * 100
 
     def buy_or_sell(self):
         trading_cost = 0.0002  # Example threshold: 0.02%
@@ -267,7 +256,6 @@ class MovingAverageStrategy:
         sell_qty = 0
 
         if np.isfinite(self.ridge_forecast_return):
-
             if self.ridge_forecast_return > trading_cost:
                 buy_qty = round_down_to_lot(
                     self.max_cash_buy * 0.7,
@@ -297,7 +285,7 @@ class MovingAverageStrategy:
         price,
         qty,
     ):
-        """Update position/accounting after a completed fill."""
+        """Update trade_qty, total_price, position_qty, cost_price, position_open after a completed fill."""
 
         price = float(price)
         qty = int(qty)
@@ -308,26 +296,12 @@ class MovingAverageStrategy:
         self.trade_qty = qty
 
         if action == "BUY":
-            self.realized_pl_pct = 0.0
-            self.total_price += (
-                price * qty
-            )
-
+            self.total_price += price * qty
             self.position_qty += qty
-
             if self.position_qty > 0:
-                self.cost_price = (
-                    self.total_price
-                    / self.position_qty
-                )
+                self.cost_price = self.total_price / self.position_qty
 
         elif action == "SELL":
-            
-        # Calculate before changing cost basis.
-            self.realized_pl_pct = self.compute_pl(
-                price
-            )
-            
             if qty > self.position_qty:
                 raise RuntimeError(
                     f"Position mismatch: "
@@ -335,28 +309,17 @@ class MovingAverageStrategy:
                     f"position_qty={self.position_qty}"
                 )
 
-            self.total_price -= (
-                self.cost_price * qty
-            )
-
+            self.realized_pl_gross += (price - self.cost_price) * qty
+            self.total_price -= self.cost_price * qty
             self.position_qty -= qty
-
             if self.position_qty == 0:
                 self.total_price = 0.0
                 self.cost_price = 0.0
 
         else:
-            raise ValueError(
-                f"Unsupported action: {action}"
-            )
+            raise ValueError(f"Unsupported action: {action}")
 
-        self.position_open = (
-            self.position_qty > 0
-        )
-
-    def reset_trade_state(self):
-        self.trade_qty = 0
-        self.realized_pl_pct = 0.0
+        self.position_open = self.position_qty > 0
 
     def save_output(
         self,
@@ -370,22 +333,11 @@ class MovingAverageStrategy:
         order_status = None
 
         if order_data is not None:
+            if "order_id" in order_data.columns and not order_data.empty:
+                order_id = order_data["order_id"].iloc[0]
 
-            if (
-                "order_id" in order_data.columns
-                and not order_data.empty
-            ):
-                order_id = (
-                    order_data["order_id"].iloc[0]
-                )
-
-            if (
-                "order_status" in order_data.columns
-                and not order_data.empty
-            ):
-                order_status = (
-                    order_data["order_status"].iloc[0]
-                )
+            if "order_status" in order_data.columns and not order_data.empty:
+                order_status = order_data["order_status"].iloc[0]
 
         candle = {
             # Candle
@@ -393,82 +345,46 @@ class MovingAverageStrategy:
             "time": pd.Timestamp(row["time_key"]),
             "open": row["open"],
             "close": row["close"],
-
             # Price statistics
             "pct_diff": self.pct_diff,
             "cum_sum_pct": self.cum_sum_pct,
-
             # Moving averages
             "short_sma": self.short_sma,
             "long_sma": self.long_sma,
-
             # RSI
             "RSI": self.rsi,
-
             # MACD
             "MACD": self.macd,
             "MACD Signal": self.macd_signal,
             "MACD Histogram": self.macd_histogram,
-            "MACD_up": (
-                self.macd
-                > self.macd_signal
-            ),
-
+            "MACD_up": (self.macd > self.macd_signal),
             # Market
             "market_trend": self.market_trend,
-
             # Position
-            "Position": (
-                "OPEN"
-                if self.position_open
-                else "CLOSED"
-            ),
+            "Position": ("OPEN" if self.position_open else "CLOSED"),
             "Position Qty": self.position_qty,
             "cost_price": self.cost_price,
             "total_price": self.total_price,
-
             # Capacity
             "max_cash_buy": self.max_cash_buy,
-            "max_position_sell": (
-                self.max_position_sell
-            ),
-
+            "max_position_sell": (self.max_position_sell),
             # Trade
             "action": action,
             "trade_qty": self.trade_qty,
-
             # P/L
-            "unrealized_pl_pct": (
-                self.unrealized_pl_pct
-            ),
-            "realized_pl_pct": (
-                self.realized_pl_pct
-            ),
-
-            "hit_profit": (
-                self.unrealized_pl_pct
-                >= PROFIT_PCT
-            ),
-            "hit_loss": (
-                self.unrealized_pl_pct
-                <= LOSS_PCT
-            ),
-
+            "unrealized_pl_pct": (self.unrealized_pl_pct),
+            "hit_profit": (self.unrealized_pl_pct >= PROFIT_PCT),
+            "hit_loss": (self.unrealized_pl_pct <= LOSS_PCT),
             # Order
             "order_id": order_id,
             "order_status": order_status,
-
             # Execution
             "execution_time": pd.NaT,
             "execution_price": np.nan,
-            "filled_qty": 0,
-            "filled_notional": 0.0,
-            "realized_pl_gross": 0.0,
-
+            "realized_pl_gross": self.realized_pl_gross,
             # Fees
             "fee_amount": 0.0,
             "fee_details": None,
-
             # Forecast return
             "ridge_forecast_return": self.ridge_forecast_return,
         }

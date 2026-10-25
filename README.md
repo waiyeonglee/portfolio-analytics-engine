@@ -77,11 +77,14 @@ The application writes portfolio and trading results to local CSV logs. When a t
 
 The daily status CSV keeps the P/L view concise:
 
-- `daily_realized_pl_sum`: realized P/L for the market date, net of sell-order fees. Same-day service restarts carry forward earlier realized P/L.
-- `unrealized_pl_sum`: current P/L on the open position; it is a snapshot, not a sum across dates.
-- `daily_unrealized_pl_change`: change in unrealized P/L since the prior market-date snapshot.
+- `daily_realized_pl_sum`: realized P/L for the current run and market date, net of sell-order fees. Prior snapshots from today are excluded, so it does not carry realized P/L forward across same-day restarts or accumulate across dates.
+- `unrealized_pl_sum`: current P/L on the open position at this snapshot. It is neither a daily total nor cumulative; it may include gains or losses accumulated over the lifetime of the open position.
 - `daily_total_pl_sum`: daily realized P/L plus the daily change in unrealized P/L.
-- `asset_change`: change in total assets since the prior market-date snapshot.
-- `reconciliation_difference`: `asset_change - daily_total_pl_sum`; zero means the reported P/L components match the account asset change.
+- `daily_unrealized_pl_difference`: daily difference in unrealized P/L, calculated as this snapshot minus the prior market-date snapshot.
+- `asset_difference`: difference in total assets since the prior market-date snapshot.
+- `reconciliation_difference`: `asset_difference - daily_total_pl_sum`; zero means the reported P/L components match the account asset difference.
+- `daily_total_pl_sum_pct`: daily total P/L as a percentage of the current run's initial equity.
+- `buy_hold_return_pct`: percentage return for a buy-and-hold benchmark over this run's candle period.
+- `intraday_sharpe_ratio`: annualized Sharpe ratio calculated from this run's intraday equity returns and the daily risk-free rate.
 
-The first recorded date has no prior snapshot, so daily unrealized change, daily total, asset change, and reconciliation are blank for that row. Unrealized P/L uses Moomoo average cost, keeping realized P/L separate for both real and simulated environments. Live realized P/L uses the actual price and quantity of every fill, including partial fills, and deducts the completed order's fee once. Differences from account asset changes can still occur due to cash flows, other holdings, or fees not included in the trade records.
+The first recorded date has no prior snapshot, so daily unrealized difference, daily total, asset difference, and reconciliation are blank for that row. Unrealized P/L uses Moomoo average cost, keeping realized P/L separate for both real and simulated environments. Live realized P/L uses the actual price and quantity of every fill, including partial fills, and deducts the completed order's fee once. Differences from account asset differences can still occur due to cash flows, other holdings, or fees not included in the trade records.

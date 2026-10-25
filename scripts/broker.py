@@ -1,5 +1,4 @@
 import pandas as pd
-
 from moomoo import (
     RET_OK,
     AuType,
@@ -21,6 +20,7 @@ from .config import pwd_unlock
 # get_available_qty (Current available buy/sell quantity)
 # get_portfolio_equity (Current total portfolio equity)
 
+
 def get_trend_symbol(symbol):
     """Return the benchmark used to determine broad market direction."""
 
@@ -32,6 +32,7 @@ def get_trend_symbol(symbol):
 
     raise ValueError(f"Unsupported symbol: {symbol}")
 
+
 def get_market_config(symbol):
     """Return Moomoo market enum and global-state key."""
 
@@ -42,6 +43,7 @@ def get_market_config(symbol):
         return TrdMarket.US, "market_us"
 
     raise ValueError(f"Unsupported symbol: {symbol}")
+
 
 def create_contexts(runtime_settings):
     """Create and initialize Moomoo quote/trade contexts."""
@@ -61,16 +63,12 @@ def create_contexts(runtime_settings):
     )
 
     if runtime_settings.trade_env == TrdEnv.REAL:
-        ret, data = trade_ctx.unlock_trade(
-            password_md5=pwd_unlock
-        )
+        ret, data = trade_ctx.unlock_trade(password_md5=pwd_unlock)
 
         if ret != RET_OK:
             quote_ctx.close()
             trade_ctx.close()
-            raise RuntimeError(
-                f"Unlock trade failed: {data}"
-            )
+            raise RuntimeError(f"Unlock trade failed: {data}")
 
     ret, stock_data = quote_ctx.get_stock_basicinfo(
         market=trade_market,
@@ -81,15 +79,12 @@ def create_contexts(runtime_settings):
     if ret != RET_OK:
         quote_ctx.close()
         trade_ctx.close()
-        raise RuntimeError(
-            f"Failed to get stock information: {stock_data}"
-        )
+        raise RuntimeError(f"Failed to get stock information: {stock_data}")
 
-    lot_size = int(
-        stock_data["lot_size"].iloc[0]
-    )
+    lot_size = int(stock_data["lot_size"].iloc[0])
 
     return quote_ctx, trade_ctx, lot_size
+
 
 def close_contexts(quote_ctx, trade_ctx):
     """Close Moomoo contexts."""
@@ -99,6 +94,7 @@ def close_contexts(quote_ctx, trade_ctx):
 
     if trade_ctx is not None:
         trade_ctx.close()
+
 
 def place_order(
     trade_ctx,
@@ -120,30 +116,21 @@ def place_order(
     )
 
     if ret != RET_OK:
-        print(
-            f"❌ Order submission failed: "
-            f"{side} {runtime_settings.symbol} | {data}"
-        )
+        print(f"❌ Order submission failed: {side} {runtime_settings.symbol} | {data}")
         return None
 
-    print(
-        f"✅ Order submitted: "
-        f"{side} {qty} {runtime_settings.symbol}"
-    )
+    print(f"✅ Order submitted: {side} {qty} {runtime_settings.symbol}")
 
     return data
+
 
 def get_position_status(trade_ctx, runtime_settings):
     """Get position details using the appropriate cost basis."""
 
-    ret, positions = trade_ctx.position_list_query(
-        trd_env=runtime_settings.trade_env
-    )
+    ret, positions = trade_ctx.position_list_query(trd_env=runtime_settings.trade_env)
 
     if ret != RET_OK:
-        raise RuntimeError(
-            f"Error fetching positions: {positions}"
-        )
+        raise RuntimeError(f"Error fetching positions: {positions}")
 
     position_columns = [
         "code",
@@ -158,21 +145,21 @@ def get_position_status(trade_ctx, runtime_settings):
     ]
 
     df = positions.loc[
-        (positions["code"] == runtime_settings.symbol)
-        & (positions["qty"] > 0)
+        (positions["code"] == runtime_settings.symbol) & (positions["qty"] > 0)
     ].copy()
 
     if df.empty:
-        df = pd.DataFrame([{
-            "code": runtime_settings.symbol,
-            **{
-                col: 0
-                for col in position_columns
-                if col != "code"
-            },
-        }])
+        df = pd.DataFrame(
+            [
+                {
+                    "code": runtime_settings.symbol,
+                    **{col: 0 for col in position_columns if col != "code"},
+                }
+            ]
+        )
 
     return df
+
 
 def get_available_qty(
     trade_ctx,
@@ -195,15 +182,12 @@ def get_available_qty(
         )
         return 0, 0
 
-    max_cash_buy = int(
-        trading_info["max_cash_buy"].iloc[0]
-    )
+    max_cash_buy = int(trading_info["max_cash_buy"].iloc[0])
 
-    max_position_sell = int(
-        trading_info["max_position_sell"].iloc[0]
-    )
+    max_position_sell = int(trading_info["max_position_sell"].iloc[0])
 
     return max_cash_buy, max_position_sell
+
 
 def get_market_trend_live(
     quote_ctx,
@@ -211,13 +195,9 @@ def get_market_trend_live(
 ):
     """Return live broad-market price change."""
 
-    trend_code = get_trend_symbol(
-        runtime_settings.symbol
-    )
+    trend_code = get_trend_symbol(runtime_settings.symbol)
 
-    ret, df_market = quote_ctx.get_market_snapshot(
-        [trend_code]
-    )
+    ret, df_market = quote_ctx.get_market_snapshot([trend_code])
 
     if ret != RET_OK:
         print(
@@ -226,10 +206,8 @@ def get_market_trend_live(
         )
         return None
 
-    return (
-        df_market.loc[0, "last_price"]
-        - df_market.loc[0, "prev_close_price"]
-    )
+    return df_market.loc[0, "last_price"] - df_market.loc[0, "prev_close_price"]
+
 
 def get_market_trend_simulation(
     quote_ctx,
@@ -238,40 +216,25 @@ def get_market_trend_simulation(
 ):
     """Load historical benchmark candles."""
 
-    trend_code = get_trend_symbol(
-        runtime_settings.symbol
-    )
+    trend_code = get_trend_symbol(runtime_settings.symbol)
 
-    api_date = session_date.strftime(
-        "%Y-%m-%d"
-    )
+    api_date = session_date.strftime("%Y-%m-%d")
 
-    ret, df_market, _ = (
-        quote_ctx.request_history_kline(
-            trend_code,
-            api_date,
-            api_date,
-            SubType.K_1M,
-            AuType.NONE,
-            session=Session.ALL,
-        )
+    ret, df_market, _ = quote_ctx.request_history_kline(
+        trend_code,
+        api_date,
+        api_date,
+        SubType.K_1M,
+        AuType.NONE,
+        session=Session.ALL,
     )
 
     if ret != RET_OK:
-        raise RuntimeError(
-            f"Error fetching market trend: "
-            f"{df_market}"
-        )
+        raise RuntimeError(f"Error fetching market trend: {df_market}")
 
-    df_market["time_key"] = pd.to_datetime(
-        df_market["time_key"]
-    )
+    df_market["time_key"] = pd.to_datetime(df_market["time_key"])
 
-    df_market = (
-        df_market
-        .sort_values("time_key")
-        .reset_index(drop=True)
-    )
+    df_market = df_market.sort_values("time_key").reset_index(drop=True)
 
     # Use 09:30 benchmark candle as reference.
     market_open_time = session_date.replace(
@@ -279,26 +242,17 @@ def get_market_trend_simulation(
         minute=30,
     )
 
-    open_row = df_market.loc[
-        df_market["time_key"]
-        == market_open_time
-    ]
+    open_row = df_market.loc[df_market["time_key"] == market_open_time]
 
     if open_row.empty:
-        raise RuntimeError(
-            "09:30 benchmark candle not available."
-        )
+        raise RuntimeError("09:30 benchmark candle not available.")
 
-    market_open_price = float(
-        open_row["open"].iloc[0]
-    )
+    market_open_price = float(open_row["open"].iloc[0])
 
-    df_market["market_trend"] = (
-        df_market["close"].astype(float)
-        - market_open_price
-    )
+    df_market["market_trend"] = df_market["close"].astype(float) - market_open_price
 
     return df_market
+
 
 def get_portfolio_equity(trade_ctx, runtime_settings, currency="USD"):
     """Get current total portfolio equity."""
@@ -309,8 +263,6 @@ def get_portfolio_equity(trade_ctx, runtime_settings, currency="USD"):
     )
 
     if ret != RET_OK:
-        raise RuntimeError(
-            f"Failed to get portfolio equity: {account}"
-        )
+        raise RuntimeError(f"Failed to get portfolio equity: {account}")
 
     return float(account["total_assets"].iloc[0])

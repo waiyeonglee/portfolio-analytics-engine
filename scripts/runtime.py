@@ -24,29 +24,20 @@ def create_runtime(args):
         symbol = "US.AAPL"
 
     else:
-        raise ValueError(
-            f"Unsupported environment: {args.env}"
-        )
+        raise ValueError(f"Unsupported environment: {args.env}")
 
     market_datetime = pd.to_datetime(args.date)
 
     if market_datetime.tzinfo is None:
-        market_datetime = market_datetime.tz_localize(
-            "Asia/Singapore"
-        )
+        market_datetime = market_datetime.tz_localize("Asia/Singapore")
         currency = "SGD"
 
     if symbol.startswith("HK."):
-        market_datetime = market_datetime.tz_convert(
-            "Asia/Hong_Kong"
-        )
+        market_datetime = market_datetime.tz_convert("Asia/Hong_Kong")
         currency = "HKD"
 
-
     elif symbol.startswith("US."):
-        market_datetime = market_datetime.tz_convert(
-            "America/New_York"
-        )
+        market_datetime = market_datetime.tz_convert("America/New_York")
         currency = "USD"
 
     return RuntimeSettings(
@@ -55,5 +46,5 @@ def create_runtime(args):
         live_mode=args.live,
         market_datetime=market_datetime,
         env_name=args.env,
-        currency=currency
+        currency=currency,
     )
