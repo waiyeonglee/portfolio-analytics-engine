@@ -7,6 +7,8 @@ from .strategy import (
     round_down_to_lot,
 )
 
+BACKTEST_BID_ASK_SPREAD_RETURN = 0.0005
+
 
 def initialize_backtest(
     strategy,
@@ -66,6 +68,7 @@ def initialize_backtest(
             market_trend=0.0,
             max_cash_buy=strategy.max_cash_buy,
             max_position_sell=strategy.max_position_sell,
+            bid_ask_spread_return=strategy.bid_ask_spread_return,
             init=True,
         )
 
@@ -142,6 +145,7 @@ def execute_backtest(
             market_trend=market_trend,
             max_cash_buy=max_cash_buy,
             max_position_sell=max_position_sell,
+            bid_ask_spread_return=BACKTEST_BID_ASK_SPREAD_RETURN,
             execute_order=execute_order,
         )
 

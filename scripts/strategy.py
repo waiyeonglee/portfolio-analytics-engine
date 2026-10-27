@@ -93,6 +93,7 @@ class MovingAverageStrategy:
         self.initial_equity = None
         self.cash = None
         self.initial_cost_price = 0.0
+        self.bid_ask_spread_return = np.nan
 
     def process_candle(
         self,
@@ -100,6 +101,7 @@ class MovingAverageStrategy:
         market_trend=0.0,
         max_cash_buy=0,
         max_position_sell=0,
+        bid_ask_spread_return=np.nan,
         execute_order=None,
         init=False,
     ):
@@ -116,6 +118,7 @@ class MovingAverageStrategy:
         self.market_trend = market_trend if market_trend is not None else 0.0
         self.max_cash_buy = int(max_cash_buy)
         self.max_position_sell = int(max_position_sell)
+        self.bid_ask_spread_return = bid_ask_spread_return if bid_ask_spread_return is not None else np.nan
         self.unrealized_pl_pct = self.compute_pl(current_price)
 
         # Warm-up: update indicators only, no trading
@@ -249,7 +252,7 @@ class MovingAverageStrategy:
         return (float(current_price) - self.cost_price) / self.cost_price * 100
 
     def buy_or_sell(self):
-        trading_cost = 0.0002  # Example threshold: 0.02%
+        trading_cost = 0.0025 + self.bid_ask_spread_return  # Example threshold: 0.25%
 
         action = "HOLD"
         buy_qty = 0
@@ -360,6 +363,7 @@ class MovingAverageStrategy:
             "MACD_up": (self.macd > self.macd_signal),
             # Market
             "market_trend": self.market_trend,
+            "bid_ask_spread_return": self.bid_ask_spread_return,
             # Position
             "Position": ("OPEN" if self.position_open else "CLOSED"),
             "Position Qty": self.position_qty,

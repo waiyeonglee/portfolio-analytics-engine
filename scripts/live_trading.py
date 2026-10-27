@@ -14,8 +14,9 @@ from moomoo import (
 
 from .broker import (
     get_available_qty,
+    get_live_bid_ask,
     get_market_config,
-    get_market_trend_live,
+    get_live_market_data,
     place_order,
 )
 from .initialization import initialize_portfolio, load_historical_candles
@@ -56,8 +57,12 @@ class KlineHandler(CurKlineHandlerBase):
         self.prev_candle = current_candle
         current_price = float(candle["close"])
 
-        # Retrieve live market data
-        market_trend = get_market_trend_live(
+        # Market trend and bid-ask spread is retrieved using current uncompleted candle, while the strategy is processed using the previous completed candle.
+        market_trend = get_live_market_data(
+            self.quote_ctx,
+            self.runtime_settings,
+        )
+        bid_ask_spread_return = get_live_bid_ask(
             self.quote_ctx,
             self.runtime_settings,
         )
@@ -74,6 +79,7 @@ class KlineHandler(CurKlineHandlerBase):
             market_trend=market_trend,
             max_cash_buy=max_cash_buy,
             max_position_sell=max_position_sell,
+            bid_ask_spread_return=bid_ask_spread_return,
             execute_order=self.execute_order,
         )
 

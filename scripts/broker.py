@@ -189,24 +189,83 @@ def get_available_qty(
     return max_cash_buy, max_position_sell
 
 
-def get_market_trend_live(
+def get_live_market_snapshot(
     quote_ctx,
-    runtime_settings,
+    codes,
 ):
-    """Return live broad-market price change."""
+    """Fetch a snapshot for the requested symbols."""
 
-    trend_code = get_trend_symbol(runtime_settings.symbol)
-
-    ret, df_market = quote_ctx.get_market_snapshot([trend_code])
+    ret, snapshot = quote_ctx.get_market_snapshot(codes)
 
     if ret != RET_OK:
         print(
-            "Error fetching market trend:",
-            df_market,
+            "Error fetching live market snapshot:",
+            snapshot,
         )
         return None
 
-    return df_market.loc[0, "last_price"] - df_market.loc[0, "prev_close_price"]
+    if snapshot.empty:
+        print("No live market snapshot returned.")
+        return None
+
+    return snapshot
+
+
+def get_live_market_data(quote_ctx, runtime_settings):
+    """Return live benchmark price change."""
+
+    trend_code = get_trend_symbol(runtime_settings.symbol)
+    snapshot = get_live_market_snapshot(quote_ctx, [trend_code])
+    if snapshot is None:
+        return None
+
+    benchmark_quote = snapshot.loc[snapshot["code"] == trend_code]
+
+    if benchmark_quote.empty:
+        print(f"No market snapshot found for benchmark {trend_code}.")
+        return None
+
+    last_price = pd.to_numeric(
+        benchmark_quote["last_price"].iloc[0],
+        errors="coerce",
+    )
+    previous_close = pd.to_numeric(
+        benchmark_quote["prev_close_price"].iloc[0],
+        errors="coerce",
+    )
+    if pd.isna(last_price) or pd.isna(previous_close):
+        print(f"Invalid market trend snapshot for {trend_code}.")
+        return None
+
+    return float(last_price - previous_close)
+
+
+def get_live_bid_ask(quote_ctx, runtime_settings):
+    """Return the latest bid-ask spread as a decimal midpoint ratio."""
+
+    symbol = runtime_settings.symbol
+    snapshot = get_live_market_snapshot(quote_ctx, [symbol])
+    if snapshot is None:
+        return None
+
+    symbol_quote = snapshot.loc[snapshot["code"] == symbol]
+    if symbol_quote.empty:
+        print(f"No bid/ask snapshot found for {symbol}.")
+        return None
+
+    quote = symbol_quote.iloc[0]
+    bid = pd.to_numeric(quote["bid_price"], errors="coerce")
+    ask = pd.to_numeric(quote["ask_price"], errors="coerce")
+    if pd.isna(bid) or pd.isna(ask) or bid <= 0 or ask <= 0 or ask < bid:
+        print(
+            f"Invalid bid/ask quote for {symbol}: "
+            f"bid={bid}, ask={ask}"
+        )
+        return None
+
+    spread = float(ask - bid)
+    midpoint = float((ask + bid) / 2)
+    return spread / midpoint
 
 
 def get_market_trend_simulation(

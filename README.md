@@ -75,6 +75,10 @@ Enable `moomoo_real` only if you intend real trading to start automatically at b
 
 The application writes portfolio and trading results to local CSV logs. When a trading service stops, `jobs/end_moomoo.sh` saves that service's journal and the current boot's `moomoo_update` journal, then uploads them and matching environment logs to `s3://moomoos3/logs/`.
 
+Live trading logs include the bid-ask spread-to-midpoint ratio as `bid_ask_spread_return`. It is a decimal (for example, `0.0025` means `0.25%`), matching Ridge's decimal return prediction. The snapshot is captured when the next candle arrives, then stored on the candle that just completed. If Moomoo does not return a valid quote, the field is blank and the candle continues through the strategy.
+
+Moomoo's historical K-line API does not include historical bid/ask quotes. Backtests therefore use a fixed assumed `bid_ask_spread_return` of `0.003` (0.3%); it is an assumption, not historical market data.
+
 The daily status CSV keeps the P/L view concise:
 
 - `daily_realized_pl_sum`: realized P/L for the current run and market date, net of sell-order fees. Prior snapshots from today are excluded, so it does not carry realized P/L forward across same-day restarts or accumulate across dates.
