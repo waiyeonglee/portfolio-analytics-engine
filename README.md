@@ -28,6 +28,17 @@ Run live in the simulated environment:
 uv run python -m scripts.main --live --env simulate
 ```
 
+Forecast the next daily return for the configured open position:
+
+```bash
+uv run python -m scripts.daily_prediction --env simulate
+```
+
+Use `--env real` to forecast the real-account position. The script is read-only: it
+fetches the configured position, a live quote, and daily candles, then prints a
+Ridge forecast and the estimated gross position-value change. It does not place
+orders or account for fees.
+
 For notebook development:
 
 ```bash

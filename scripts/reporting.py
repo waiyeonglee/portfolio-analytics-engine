@@ -215,7 +215,7 @@ def get_daily_status(
         ignore_index=True,
         sort=False,
     )
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.date
     df = df.sort_values("date").reset_index(drop=True)
 
     # Realized P/L is accumulated within each market date; unrealized P/L is a snapshot.
