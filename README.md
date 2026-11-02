@@ -28,16 +28,34 @@ Run live in the simulated environment:
 uv run python -m scripts.main --live --env simulate
 ```
 
-Forecast the next daily return for the configured open position:
+Forecast daily returns for the next five sessions for each open position in the selected account:
 
 ```bash
 uv run python -m scripts.daily_prediction --env simulate
 ```
 
-Use `--env real` to forecast the real-account position. The script is read-only: it
-fetches the configured position, a live quote, and daily candles, then prints a
-Ridge forecast and the estimated gross position-value change. It does not place
-orders or account for fees.
+Use `--env real` to forecast real-account positions. The script is read-only: it
+fetches open positions, live quotes, daily candles, and exchange trading dates.
+Features use the latest completed daily candle (typically yesterday). One
+pooled model uses lagged daily returns for every held stock and ticker
+indicators, allowing it to use cross-stock relationships. A Ridge/Lasso/
+ElasticNet grid search selects shared settings on walk-forward validation, then
+the model forecasts each stock's five daily close-to-close returns. Entry is
+assumed at the next session's close. The CSV
+includes columns named
+`predicted_return_ending_YYYY-MM-DD`, with the forecast's end date in each
+header, plus the compounded five-session return and estimated gross
+position-value change. The current quote is only used to estimate position
+value, not to create model features. The script does not place orders or account
+for fees. Each run writes a timestamped CSV to `logs/` with the forecasts, the
+pooled walk-forward validation Sharpe ratio, and any symbols that could not be
+forecast, plus a companion grid-search CSV with each candidate's validation
+score. Validation simulates non-overlapping five-session holds when the
+compounded predicted return is positive and holds cash otherwise; Sharpe is
+annualized using 252 trading sessions. Daily forecast features reuse the
+strategy's RSI, MACD, MACD histogram, short/long SMA spread, and percent price
+change calculations. The strategy's market trend feature is not included in
+this daily model because it does not currently fetch benchmark history.
 
 For notebook development:
 
