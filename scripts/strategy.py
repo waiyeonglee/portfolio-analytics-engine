@@ -258,6 +258,22 @@ class MovingAverageStrategy:
         buy_qty = 0
         sell_qty = 0
 
+        # Exit an open position when its profit target or loss limit is reached.
+        # These checks take priority over the forecast-based sell signal.
+        if self.position_qty > 0 and (
+            self.unrealized_pl_pct >= PROFIT_PCT
+            or self.unrealized_pl_pct <= LOSS_PCT
+        ):
+            sell_qty = round_down_to_lot(
+                min(
+                    self.position_qty,
+                    self.max_position_sell,
+                ),
+                self.lot_size,
+            )
+            if sell_qty > 0:
+                return "SELL", buy_qty, sell_qty
+
         if np.isfinite(self.ridge_forecast_return):
             if self.ridge_forecast_return > trading_cost:
                 buy_qty = round_down_to_lot(
