@@ -301,11 +301,117 @@ def predict_pooled_returns(daily_histories):
     )
 
 
+def backtest_recent_predictions(symbol, history, environment, backtest_days=30):
+    """Evaluate non-overlapping forecast holds over recent completed sessions."""
+
+    if backtest_days <= 0 or backtest_days % FORECAST_HORIZON != 0:
+        raise ValueError(
+            f"Backtest sessions must be a positive multiple of {FORECAST_HORIZON}"
+        )
+
+    history = history.sort_values("time_key").reset_index(drop=True)
+    full_features = make_daily_features(history)
+    last_index = len(history) - 1
+    first_signal_index = last_index - backtest_days - 1
+    if first_signal_index < 0:
+        raise ValueError(
+            f"Need at least {backtest_days + FORECAST_HORIZON + 1} completed "
+            "sessions for this backtest window"
+        )
+
+    signal_indices = range(
+        first_signal_index,
+        last_index - FORECAST_HORIZON + 1,
+        FORECAST_HORIZON,
+    )
+    result_rows = []
+    grid_rows = []
+    strategy_period_returns = []
+
+    for signal_index in signal_indices:
+        signal_date = history.loc[signal_index, "time_key"]
+        history_to_signal = history.iloc[: signal_index + 1].copy()
+        (
+            predictions,
+            training_counts,
+            validation_sharpe,
+            validation_rows,
+            selected_model,
+            candidate_scores,
+        ) = predict_pooled_returns({symbol: history_to_signal})
+
+        predicted_daily = predictions[symbol]
+        predicted_total = float(
+            np.prod(1 + np.asarray(list(predicted_daily.values()))) - 1
+        )
+        actual_row = full_features.loc[
+            full_features["time_key"] == signal_date
+        ].iloc[0]
+        actual_daily = {
+            day: float(actual_row[f"target_day_{day}"])
+            for day in range(1, FORECAST_HORIZON + 1)
+        }
+        actual_total = float(
+            np.prod(1 + np.asarray(list(actual_daily.values()))) - 1
+        )
+        strategy_return = actual_total if predicted_total > 0 else 0.0
+        strategy_period_returns.append(strategy_return)
+
+        row = {
+            "environment": environment,
+            "symbol": symbol,
+            "signal_date": signal_date.date().isoformat(),
+            "execution_date": history.loc[signal_index + 1, "time_key"]
+            .date()
+            .isoformat(),
+            "period_end_date": history.loc[
+                signal_index + FORECAST_HORIZON + 1, "time_key"
+            ].date().isoformat(),
+            "selected_model": selected_model["model"],
+            "selected_alpha": selected_model["alpha"],
+            "selected_l1_ratio": selected_model["l1_ratio"],
+            "predicted_5_session_return": predicted_total,
+            "actual_5_session_return": actual_total,
+            "strategy_5_session_return": strategy_return,
+            "position": "LONG" if predicted_total > 0 else "CASH",
+            "model_validation_sharpe": validation_sharpe,
+            "validation_periods": validation_rows,
+            "training_observations": min(training_counts.values()),
+        }
+        for day in range(1, FORECAST_HORIZON + 1):
+            row[f"predicted_return_day_{day}"] = predicted_daily[day]
+            row[f"actual_return_day_{day}"] = actual_daily[day]
+        result_rows.append(row)
+
+        grid_rows.extend(
+            {"signal_date": signal_date.date().isoformat(), **score}
+            for score in candidate_scores
+        )
+
+    returns = pd.Series(strategy_period_returns, dtype=float)
+    period_std = returns.std(ddof=1)
+    backtest_sharpe = (
+        float(
+            returns.mean()
+            / period_std
+            * np.sqrt(TRADING_SESSIONS_PER_YEAR / FORECAST_HORIZON)
+        )
+        if len(returns) >= 2 and np.isfinite(period_std) and period_std > 0
+        else np.nan
+    )
+    cumulative_strategy_return = float(np.prod(1 + returns.to_numpy()) - 1)
+    for row in result_rows:
+        row["backtest_annualized_sharpe"] = backtest_sharpe
+        row["cumulative_strategy_return"] = cumulative_strategy_return
+
+    return result_rows, grid_rows
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Forecast five daily returns after next-session execution "
-            "for open Moomoo positions."
+            "for open Moomoo positions, or backtest recent sessions."
         )
     )
     parser.add_argument(
@@ -313,6 +419,16 @@ def parse_args():
         choices=["real", "simulate"],
         default="simulate",
         help="Moomoo trading environment (default: simulate).",
+    )
+    parser.add_argument(
+        "--backtest-days",
+        type=int,
+        default=0,
+        help=(
+            "Backtest the configured environment symbol over this many completed "
+            "sessions using non-overlapping five-session holds. Must be a positive "
+            "multiple of five."
+        ),
     )
     return parser.parse_args()
 
@@ -549,25 +665,37 @@ def finish_pooled_prediction(
     return result
 
 
-def write_prediction_log(results, grid_results):
-    """Write prediction output and model-grid validation scores to timestamped CSVs."""
+def write_prediction_log(results, grid_results, backtest=False):
+    """Write prediction output and grid scores with date-prefixed filenames."""
 
     if not results:
         return
     logs_dir = Path(__file__).resolve().parents[1] / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f")
-    log_path = logs_dir / f"daily_predictions_{timestamp}.csv"
+    date_prefix = pd.Timestamp.now().strftime("%Y-%m-%d")
+    stem = "daily_prediction_backtest" if backtest else "daily_predictions"
+    log_path = logs_dir / f"{date_prefix} - {stem}.csv"
     pd.DataFrame(results).to_csv(log_path, index=False)
     print(f"\nPrediction log saved to {log_path}")
     if grid_results:
-        grid_path = logs_dir / f"daily_prediction_grid_search_{timestamp}.csv"
+        grid_stem = (
+            "daily_prediction_backtest_grid_search"
+            if backtest
+            else "daily_prediction_grid_search"
+        )
+        grid_path = logs_dir / f"{date_prefix} - {grid_stem}.csv"
         pd.DataFrame(grid_results).to_csv(grid_path, index=False)
         print(f"Validation grid scores saved to {grid_path}")
 
 
 def main():
     args = parse_args()
+    if args.backtest_days < 0 or (
+        args.backtest_days and args.backtest_days % FORECAST_HORIZON != 0
+    ):
+        raise ValueError(
+            f"--backtest-days must be zero or a positive multiple of {FORECAST_HORIZON}"
+        )
     runtime_settings = create_runtime(
         argparse.Namespace(
             env=args.env,
@@ -580,9 +708,48 @@ def main():
     trade_ctx = None
     results = []
     grid_results = []
+    backtest = args.backtest_days > 0
     run_time = pd.Timestamp.now().tz_localize(None).isoformat(timespec="seconds")
     try:
         quote_ctx, trade_ctx, _ = create_contexts(runtime_settings)
+        if backtest:
+            symbol = runtime_settings.symbol
+            market_now = get_market_now(symbol)
+            history, history_status, message = fetch_completed_history(
+                quote_ctx,
+                symbol,
+                market_now,
+            )
+            if history is None:
+                raise RuntimeError(
+                    f"Could not load completed daily history for {symbol}: "
+                    f"{history_status}: {message}"
+                )
+            results, grid_results = backtest_recent_predictions(
+                symbol=symbol,
+                history=history,
+                environment=args.env,
+                backtest_days=args.backtest_days,
+            )
+            for result in results:
+                print(
+                    f"{result['signal_date']} | {result['position']} | "
+                    f"predicted={result['predicted_5_session_return']:+.2%} | "
+                    f"actual={result['actual_5_session_return']:+.2%} | "
+                    f"strategy={result['strategy_5_session_return']:+.2%}"
+                )
+            if results:
+                print(
+                    f"{args.backtest_days}-session backtest cumulative return: "
+                    f"{results[0]['cumulative_strategy_return']:+.2%}"
+                )
+                if np.isfinite(results[0]["backtest_annualized_sharpe"]):
+                    print(
+                        f"{args.backtest_days}-session backtest annualized Sharpe: "
+                        f"{results[0]['backtest_annualized_sharpe']:.3f}"
+                    )
+            return
+
         positions = get_open_positions(
             trade_ctx,
             runtime_settings.trade_env,
@@ -665,7 +832,7 @@ def main():
                 )
     finally:
         close_contexts(quote_ctx, trade_ctx)
-        write_prediction_log(results, grid_results)
+        write_prediction_log(results, grid_results, backtest=backtest)
 
 
 if __name__ == "__main__":

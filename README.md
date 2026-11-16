@@ -34,6 +34,18 @@ Forecast daily returns for the next five sessions for each open position in the 
 uv run python -m scripts.daily_prediction --env simulate
 ```
 
+Backtest the configured environment symbol over the latest 30 completed trading
+sessions, using non-overlapping five-session holds:
+
+```bash
+uv run python -m scripts.daily_prediction --env simulate --backtest-days 30
+```
+
+This backtest does not require an open position. `simulate` evaluates `US.AAPL`
+and `real` evaluates `US.META`. It writes period predictions, realized returns,
+strategy returns, and model-grid scores to date-prefixed CSVs in `logs/`. Returns
+exclude fees and slippage.
+
 Use `--env real` to forecast real-account positions. The script is read-only: it
 fetches open positions, live quotes, daily candles, and exchange trading dates.
 Features use the latest completed daily candle (typically yesterday). One
@@ -47,7 +59,7 @@ includes columns named
 header, plus the compounded five-session return and estimated gross
 position-value change. The current quote is only used to estimate position
 value, not to create model features. The script does not place orders or account
-for fees. Each run writes a timestamped CSV to `logs/` with the forecasts, the
+for fees. Each run writes a date-prefixed CSV to `logs/` with the forecasts, the
 pooled walk-forward validation Sharpe ratio, and any symbols that could not be
 forecast, plus a companion grid-search CSV with each candidate's validation
 score. Validation simulates non-overlapping five-session holds when the

@@ -285,13 +285,8 @@ def save_results(
     logs_folder = os.path.join(os.getcwd(), "logs")
     os.makedirs(logs_folder, exist_ok=True)
 
-    if runtime_settings.live_mode:
-        mode = "live"
-        timestamp = pd.Timestamp.today().strftime("%Y-%m-%d %H_%M_%S")
-
-    else:
-        mode = "backtest"
-        timestamp = runtime_settings.market_datetime.strftime("%Y-%m-%d %H_%M_%S")
+    mode = "live" if runtime_settings.live_mode else "backtest"
+    date_prefix = runtime_settings.market_datetime.strftime("%Y-%m-%d")
 
     # Filenames for logs
     trading_logs_file_name = f"{mode}_{runtime_settings.env_name}_trading_logs.csv"
@@ -300,17 +295,17 @@ def save_results(
 
     trading_logs_path = os.path.join(
         logs_folder,
-        f"{timestamp} - {trading_logs_file_name}",
+        f"{date_prefix} - {trading_logs_file_name}",
     )
 
     pl_path = os.path.join(
         logs_folder,
-        f"{timestamp} - {pl_file_name}",
+        f"{date_prefix} - {pl_file_name}",
     )
 
     daily_status_path = os.path.join(
         logs_folder,
-        f"{timestamp} - {daily_status_file_name}",
+        f"{date_prefix} - {daily_status_file_name}",
     )
 
     output_df = pd.DataFrame(strategy.output)
