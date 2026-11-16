@@ -56,7 +56,7 @@ def initialize_backtest(
         runtime_settings=runtime_settings,
         current_price=float(df_past["close"].iloc[-1]),
         mode="backtest",
-        initial_cash=1000.0,
+        initial_equity=1000.0,
     )
 
     if len(df_past) < LONG_WINDOW:

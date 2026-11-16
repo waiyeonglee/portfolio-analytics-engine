@@ -91,6 +91,8 @@ class MovingAverageStrategy:
         self.pending_order = False
 
         self.initial_equity = None
+        self.initial_position_qty = 0
+        self.initial_position_price = 0.0
         self.cash = None
         self.initial_cost_price = 0.0
         self.bid_ask_spread_return = np.nan

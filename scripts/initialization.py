@@ -40,16 +40,18 @@ def initialize_portfolio(
     runtime_settings,
     current_price,
     mode,
-    initial_cash=1000.0,
+    initial_equity=1000.0,
 ):
     """Initialize portfolio state for live or backtest."""
 
     if mode == "backtest":
-        strategy.initial_equity = float(initial_cash)
-        strategy.cash = float(initial_cash)
+        strategy.initial_equity = float(initial_equity)
+        strategy.cash = float(initial_equity)
 
         strategy.initial_cost_price = 0.0
         strategy.position_qty = 0
+        strategy.initial_position_qty = 0
+        strategy.initial_position_price = 0.0
         strategy.cost_price = 0.0
 
         strategy.max_cash_buy = (
@@ -75,6 +77,8 @@ def initialize_portfolio(
         )
 
         strategy.position_qty = int(position_df["qty"].iloc[0])
+        strategy.initial_position_qty = strategy.position_qty
+        strategy.initial_position_price = float(current_price)
 
         if runtime_settings.trade_env == TrdEnv.REAL:
             cost_column = "average_cost"

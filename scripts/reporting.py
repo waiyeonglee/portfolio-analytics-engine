@@ -70,13 +70,13 @@ def get_daily_risk_free_rate(trading_date):
     return float(available["daily_rf"].iloc[-1])
 
 
-def calculate_intraday_sharpe(
+def calculate_session_return(
     output_df,
-    initial_cash,
-    daily_rf=0.0,
-    periods_per_day=390,
+    initial_equity,
+    initial_position_qty=0,
+    initial_position_price=0.0,
 ):
-    """Calculate intraday portfolio equity, returns, and Sharpe ratio."""
+    """Calculate this session's return from the modeled equity series."""
 
     df = output_df.copy()
 
@@ -105,29 +105,32 @@ def calculate_intraday_sharpe(
         0,
     ) + (trade_qty * execution_price - fee).where(sell_mask, 0)
 
-    df["cash"] = float(initial_cash) + cash_change.cumsum()
+    initial_position_value = float(initial_position_qty) * float(
+        initial_position_price
+    )
+    df["cash"] = (
+        float(initial_equity) - initial_position_value + cash_change.cumsum()
+    )
     df["equity"] = df["cash"] + position_qty * close
 
     trading_mask = df["action"] != "INITIALIZING"
     df["returns"] = df["equity"].pct_change(fill_method=None).where(trading_mask)
+    session_rows = df.loc[trading_mask]
+    if session_rows.empty or initial_equity <= 0:
+        return df, np.nan
+    return df, float(session_rows["equity"].iloc[-1] / initial_equity - 1)
 
-    df["excess_return"] = np.nan
 
-    df.loc[trading_mask, "excess_return"] = (
-        df.loc[trading_mask, "returns"] - daily_rf / periods_per_day
-    )
+def calculate_annualized_daily_sharpe(daily_returns, daily_risk_free_rates):
+    """Calculate annualized Sharpe from the latest 30 daily excess returns."""
 
-    excess = df.loc[trading_mask, "excess_return"].dropna()
-
-    intraday_sharpe = np.nan
-
-    if len(excess) >= 2:
-        volatility = excess.std(ddof=1)
-
-        if pd.notna(volatility) and volatility > 0:
-            intraday_sharpe = excess.mean() / volatility * np.sqrt(periods_per_day)
-
-    return df, intraday_sharpe
+    excess = (daily_returns - daily_risk_free_rates).dropna().tail(30)
+    if len(excess) < 30:
+        return np.nan
+    volatility = excess.std(ddof=1)
+    if not np.isfinite(volatility) or volatility <= 0:
+        return np.nan
+    return float(excess.mean() / volatility * np.sqrt(252))
 
 
 def compute_daily_pl(output_df):
@@ -150,7 +153,8 @@ def get_daily_status(
     runtime_settings,
     realized_pl_sum,
     initial_equity,
-    intraday_sharpe_ratio,
+    daily_return,
+    daily_rf,
     buy_hold_return_pct,
     logs_folder,
     daily_status_file_name,
@@ -173,7 +177,9 @@ def get_daily_status(
 
     # Realized PL
     df["daily_realized_pl_sum"] = realized_pl_sum
-    df["intraday_sharpe_ratio"] = intraday_sharpe_ratio
+    df["daily_return"] = daily_return
+    df["daily_rf"] = daily_rf
+    df["annualized_sharpe_ratio"] = np.nan
     df["buy_hold_return_pct"] = buy_hold_return_pct
 
     # Total Assets
@@ -218,6 +224,15 @@ def get_daily_status(
     df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.date
     df = df.sort_values("date").reset_index(drop=True)
 
+    valid_daily_returns = pd.to_numeric(df["daily_return"], errors="coerce")
+    valid_daily_risk_free = pd.to_numeric(df["daily_rf"], errors="coerce")
+    df.loc[df.index[-1], "annualized_sharpe_ratio"] = (
+        calculate_annualized_daily_sharpe(
+            valid_daily_returns,
+            valid_daily_risk_free,
+        )
+    )
+
     # Realized P/L is accumulated within each market date; unrealized P/L is a snapshot.
     df["daily_unrealized_pl_difference"] = df["unrealized_pl_sum"].diff()
     df["daily_total_pl_sum"] = (
@@ -233,19 +248,28 @@ def get_daily_status(
     df["reconciliation_difference"] = df["asset_difference"] - df["daily_total_pl_sum"]
 
     output_columns = [
+        # Date and position
         "date",
         "code",
         "qty",
+
+        # Portfolio value and return metrics
         "total_assets",
+        "daily_return",
+        "daily_rf",
+        "annualized_sharpe_ratio",
+        "buy_hold_return_pct",
+
+        # Daily profit and loss
         "daily_realized_pl_sum",
         "unrealized_pl_sum",
-        "daily_total_pl_sum",
         "daily_unrealized_pl_difference",
+        "daily_total_pl_sum",
+        "daily_total_pl_sum_pct",
+
+        # Account reconciliation
         "asset_difference",
         "reconciliation_difference",
-        "daily_total_pl_sum_pct",
-        "buy_hold_return_pct",
-        "intraday_sharpe_ratio",
     ]
 
     return df[output_columns]
@@ -302,10 +326,11 @@ def save_results(
 
     daily_rf = get_daily_risk_free_rate(runtime_settings.market_datetime)
 
-    output_df, intraday_sharpe_ratio = calculate_intraday_sharpe(
+    output_df, daily_return = calculate_session_return(
         output_df=output_df,
-        initial_cash=strategy.initial_equity,
-        daily_rf=daily_rf,
+        initial_equity=strategy.initial_equity,
+        initial_position_qty=strategy.initial_position_qty,
+        initial_position_price=strategy.initial_position_price,
     )
     output_df.to_csv(trading_logs_path, index=False)
 
@@ -325,7 +350,8 @@ def save_results(
         runtime_settings=runtime_settings,
         realized_pl_sum=realized_pl_sum,
         initial_equity=strategy.initial_equity,
-        intraday_sharpe_ratio=intraday_sharpe_ratio,
+        daily_return=daily_return,
+        daily_rf=daily_rf,
         buy_hold_return_pct=buy_hold_return_pct,
         logs_folder=logs_folder,
         daily_status_file_name=(daily_status_file_name),

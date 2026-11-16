@@ -118,6 +118,6 @@ The daily status CSV keeps the P/L view concise:
 - `reconciliation_difference`: `asset_difference - daily_total_pl_sum`; zero means the reported P/L components match the account asset difference.
 - `daily_total_pl_sum_pct`: daily total P/L as a percentage of the current run's initial equity.
 - `buy_hold_return_pct`: percentage return for a buy-and-hold benchmark over this run's candle period.
-- `intraday_sharpe_ratio`: annualized Sharpe ratio calculated from this run's intraday equity returns and the daily risk-free rate.
+- `annualized_sharpe_ratio`: annualized Sharpe ratio from the latest 30 available daily portfolio returns, using the sample standard deviation of daily excess returns and a 252-session annualization factor. It is blank until 30 valid daily returns are available. Each daily return and its risk-free rate are stored in `daily_return` and `daily_rf`.
 
 The first recorded date has no prior snapshot, so daily unrealized difference, daily total, asset difference, and reconciliation are blank for that row. Unrealized P/L uses Moomoo average cost, keeping realized P/L separate for both real and simulated environments. Live realized P/L uses the actual price and quantity of every fill, including partial fills, and deducts the completed order's fee once. Differences from account asset differences can still occur due to cash flows, other holdings, or fees not included in the trade records.
