@@ -27,7 +27,7 @@ journalctl -u moomoo_update.service -b 0 --no-pager \
     > "$DIR/$today - moomoo_update_journal.txt"
 aws s3 cp "$DIR/$today - moomoo_update_journal.txt" s3://moomoos3/logs/
 
-# Upload only this environment's logs
+# Upload only this environment's logs created for the current server date.
 find "$DIR" -maxdepth 1 -type f \
     -name "*$today*${ENV}*" \
     -print0 |

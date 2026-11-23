@@ -286,7 +286,7 @@ def save_results(
     os.makedirs(logs_folder, exist_ok=True)
 
     mode = "live" if runtime_settings.live_mode else "backtest"
-    date_prefix = runtime_settings.market_datetime.strftime("%Y-%m-%d")
+    date_prefix = pd.Timestamp.now().strftime("%Y-%m-%d")
 
     # Filenames for logs
     trading_logs_file_name = f"{mode}_{runtime_settings.env_name}_trading_logs.csv"
