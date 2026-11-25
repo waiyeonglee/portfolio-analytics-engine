@@ -212,32 +212,30 @@ def get_live_market_snapshot(
 
 
 def get_live_market_data(quote_ctx, runtime_settings):
-    """Return live benchmark price change."""
+    """Return the benchmark's latest one-minute percentage return."""
 
     trend_code = get_trend_symbol(runtime_settings.symbol)
-    snapshot = get_live_market_snapshot(quote_ctx, [trend_code])
-    if snapshot is None:
-        return None
-
-    benchmark_quote = snapshot.loc[snapshot["code"] == trend_code]
-
-    if benchmark_quote.empty:
-        print(f"No market snapshot found for benchmark {trend_code}.")
-        return None
-
-    last_price = pd.to_numeric(
-        benchmark_quote["last_price"].iloc[0],
-        errors="coerce",
+    ret, candles = quote_ctx.get_cur_kline(
+        trend_code,
+        1,
+        SubType.K_1M,
+        AuType.NONE,
     )
-    previous_close = pd.to_numeric(
-        benchmark_quote["prev_close_price"].iloc[0],
-        errors="coerce",
-    )
-    if pd.isna(last_price) or pd.isna(previous_close):
-        print(f"Invalid market trend snapshot for {trend_code}.")
+    if ret != RET_OK:
+        print(f"Error fetching one-minute market candle for {trend_code}: {candles}")
+        return None
+    if candles.empty:
+        print(f"No one-minute market candle found for {trend_code}.")
         return None
 
-    return float(last_price - previous_close)
+    candle = candles.iloc[-1]
+    close = pd.to_numeric(candle["close"], errors="coerce")
+    last_close = pd.to_numeric(candle["last_close"], errors="coerce")
+    if pd.isna(close) or pd.isna(last_close) or last_close <= 0:
+        print(f"Invalid one-minute market candle for {trend_code}.")
+        return None
+
+    return float((close - last_close) / last_close * 100)
 
 
 def get_live_bid_ask(quote_ctx, runtime_settings):

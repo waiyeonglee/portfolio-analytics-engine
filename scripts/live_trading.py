@@ -16,6 +16,7 @@ from .broker import (
     get_available_qty,
     get_live_bid_ask,
     get_market_config,
+    get_trend_symbol,
     get_live_market_data,
     place_order,
 )
@@ -43,7 +44,11 @@ class KlineHandler(CurKlineHandlerBase):
         if data.empty:
             return RET_OK, data
 
-        current_candle = data.iloc[-1]
+        symbol_candles = data.loc[data["code"] == self.runtime_settings.symbol]
+        if symbol_candles.empty:
+            return RET_OK, data
+
+        current_candle = symbol_candles.iloc[-1]
 
         # Wait until the first candle is completed
         if self.prev_candle is None:
@@ -384,16 +389,15 @@ def run_live(
         )
     )
 
+    trend_code = get_trend_symbol(runtime_settings.symbol)
     ret, data = quote_ctx.subscribe(
-        [runtime_settings.symbol],
+        [runtime_settings.symbol, trend_code],
         [SubType.K_1M],
         subscribe_push=True,
     )
 
     if ret != RET_OK:
         raise RuntimeError(f"Subscription failed: {data}")
-
-    _, market_key = get_market_config(runtime_settings.symbol)
 
     print(f"🚀 Started LIVE TRADING in environment: {runtime_settings.trade_env}")
 
